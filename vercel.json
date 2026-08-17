@@ -3,12 +3,12 @@
   "buildCommand": "prisma generate && nest build",
   "outputDirectory": "dist",
   "functions": {
-    "dist/vercel.js": {
+    "api/index.js": {
       "maxDuration": 60,
       "memory": 1024
     }
   },
   "rewrites": [
-    { "source": "/(.*)", "destination": "/dist/vercel.js" }
+    { "source": "/(.*)", "destination": "/api/index.js" }
   ]
 }
