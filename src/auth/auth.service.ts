@@ -8,7 +8,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcryptjs';
-import type { AuthTokens, JwtPayload, SessionUser } from '../../lib/types';
+import type { AuthTokens, JwtPayload, SessionUser } from '../lib/types';
 import { PrismaService } from '../prisma/prisma.service';
 import { SecurityService } from '../security/security.service';
 import { RegisterDto } from './dto/register.dto';

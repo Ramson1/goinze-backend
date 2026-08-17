@@ -1,5 +1,5 @@
 import { Body, Controller, Get, Post, Query, UseGuards } from '@nestjs/common';
-import type { SessionUser } from '../../../lib/types';
+import type { SessionUser } from '../lib/types';
 import { StudentsMeService } from './students-me.service';
 import { RegisterCoursesDto } from './dto/students-me.dto';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';

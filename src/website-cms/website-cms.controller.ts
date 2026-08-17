@@ -13,7 +13,7 @@ import {
   UseInterceptors,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
-import type { SessionUser } from '../../lib/types';
+import type { SessionUser } from '../lib/types';
 import { WebsiteCmsService } from './website-cms.service';
 import { SecurityService } from '../security/security.service';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';

@@ -13,7 +13,7 @@ import {
   UseInterceptors,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
-import type { SessionUser } from '../../lib/types';
+import type { SessionUser } from '../lib/types';
 import { AdmissionsService } from './admissions.service';
 import { ApplyDto, ReviewApplicationDto, ApproveApplicationDto, UpdateVerificationDto } from './dto/admission.dto';
 import { PaginationDto } from '../common/dto/pagination.dto';

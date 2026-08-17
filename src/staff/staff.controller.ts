@@ -9,7 +9,7 @@ import {
   Query,
   UseGuards,
 } from '@nestjs/common';
-import type { SessionUser } from '../../lib/types';
+import type { SessionUser } from '../lib/types';
 import { StaffService } from './staff.service';
 import { PaginationDto } from '../common/dto/pagination.dto';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';

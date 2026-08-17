@@ -7,7 +7,7 @@ import {
   Put,
   UseGuards,
 } from '@nestjs/common';
-import type { SessionUser } from '../../lib/types';
+import type { SessionUser } from '../lib/types';
 import { SettingsService } from './settings.service';
 import { SecurityService } from '../security/security.service';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';

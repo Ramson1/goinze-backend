@@ -1,5 +1,5 @@
 import { createParamDecorator, ExecutionContext } from '@nestjs/common';
-import type { SessionUser } from '../../../../lib/types';
+import type { SessionUser } from '../../lib/types';
 
 /**
  * Param decorator that extracts the authenticated user (request.user)

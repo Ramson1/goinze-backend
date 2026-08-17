@@ -1,5 +1,5 @@
 import { BadRequestException, ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
-import { computeGpa, generateCardNumber, generateVerificationCode } from '../../lib/utils';
+import { computeGpa, generateCardNumber, generateVerificationCode } from '../lib/utils';
 import { PrismaService } from '../prisma/prisma.service';
 import { CommunicationService } from '../communication/communication.service';
 import type { RegisterCoursesDto } from './dto/students-me.dto';

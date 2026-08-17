@@ -8,7 +8,7 @@ import {
   Post,
   UseGuards,
 } from '@nestjs/common';
-import type { SessionUser } from '../../lib/types';
+import type { SessionUser } from '../lib/types';
 import { CbtService } from './cbt.service';
 import {
   CreateQuestionBankDto,

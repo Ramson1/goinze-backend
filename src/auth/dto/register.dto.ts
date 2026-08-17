@@ -5,8 +5,8 @@ import {
   IsString,
   MinLength,
 } from 'class-validator';
-import { ROLES } from '../../../../lib/types';
-import type { Role } from '../../../../lib/types';
+import { ROLES } from '../../lib/types';
+import type { Role } from '../../lib/types';
 
 export class RegisterDto {
   @IsEmail()

@@ -5,7 +5,7 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
-import { resolveGrade } from '../../lib/utils';
+import { resolveGrade } from '../lib/utils';
 import { PrismaService } from '../prisma/prisma.service';
 import { CommunicationService } from '../communication/communication.service';
 import type { SaveScoresDto, UpdateProfileDto } from './dto/lecturers-me.dto';

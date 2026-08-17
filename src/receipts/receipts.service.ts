@@ -2,7 +2,7 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import {
   generateReceiptNumber,
   generateVerificationCode,
-} from '../../lib/utils';
+} from '../lib/utils';
 import { PrismaService } from '../prisma/prisma.service';
 
 /**

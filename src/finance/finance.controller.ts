@@ -12,7 +12,7 @@ import {
   UnauthorizedException,
   UseGuards,
 } from '@nestjs/common';
-import type { SessionUser } from '../../lib/types';
+import type { SessionUser } from '../lib/types';
 import { FinanceService } from './finance.service';
 import { FlutterwaveGateway } from './flutterwave.gateway';
 import {

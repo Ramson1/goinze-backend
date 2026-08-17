@@ -1,6 +1,6 @@
 import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
-import { computeGpa, resolveGrade, generateResultPin } from '../../lib/utils';
-import type { CourseGrade } from '../../lib/utils';
+import { computeGpa, resolveGrade, generateResultPin } from '../lib/utils';
+import type { CourseGrade } from '../lib/utils';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   EnterScoreDto,

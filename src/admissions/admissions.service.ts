@@ -6,8 +6,8 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as bcrypt from 'bcryptjs';
-import type { Paginated } from '../../../lib/types';
-import { generateApplicationNo, generateMatricNumber } from '../../lib/utils';
+import type { Paginated } from '../lib/types';
+import { generateApplicationNo, generateMatricNumber } from '../lib/utils';
 import { PrismaService } from '../prisma/prisma.service';
 import { paginated } from '../common/utils/pagination.util';
 import { PaginationDto } from '../common/dto/pagination.dto';

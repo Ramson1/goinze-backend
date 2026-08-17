@@ -7,7 +7,7 @@ import {
   Query,
   UseGuards,
 } from '@nestjs/common';
-import type { SessionUser } from '../../../lib/types';
+import type { SessionUser } from '../lib/types';
 import { AttendanceService } from './attendance.service';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';

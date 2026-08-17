@@ -1,5 +1,5 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
-import { slugify } from '../../lib/utils';
+import { slugify } from '../lib/utils';
 import { PrismaService } from '../prisma/prisma.service';
 import { CloudinaryService } from '../common/utils/cloudinary.service';
 
