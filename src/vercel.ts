@@ -7,7 +7,7 @@
 require('tsconfig-paths/register');
 
 import { NestFactory } from '@nestjs/core';
-import { ValidationPipe, Logger } from '@nestjs/common';
+import { ValidationPipe, Logger, RequestMethod } from '@nestjs/common';
 import { AppModule } from './app.module';
 
 let cachedHandler: any;
@@ -20,7 +20,9 @@ async function bootstrap(): Promise<any> {
     cachedPromise = (async () => {
       const app = await NestFactory.create(AppModule, { logger: ['error', 'warn'] });
 
-      app.setGlobalPrefix('api/v1');
+      app.setGlobalPrefix('api/v1', {
+        exclude: [{ path: '', method: RequestMethod.GET }],
+      });
 
       app.enableCors({
         origin: true,

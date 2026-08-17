@@ -27,6 +27,7 @@ import { WebsiteCmsModule } from './website-cms/website-cms.module';
 import { HealthModule } from './health/health.module';
 import { ContactModule } from './contact/contact.module';
 import { MailModule } from './mail/mail.module';
+import { RootModule } from './root/root.module';
 
 @Module({
   imports: [
@@ -56,6 +57,7 @@ import { MailModule } from './mail/mail.module';
     HealthModule,
     ContactModule,
     MailModule,
+    RootModule,
   ],
 })
 export class AppModule {}
