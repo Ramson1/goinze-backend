@@ -6,6 +6,8 @@ import { LoginDto } from './dto/login.dto';
 import { RefreshDto } from './dto/refresh.dto';
 import { ChangePasswordDto } from './dto/change-password.dto';
 import { UpdateProfileDto } from './dto/update-profile.dto';
+import { SelfRegisterDto } from './dto/self-register.dto';
+import { LecturerSelfRegisterDto } from './dto/lecturer-self-register.dto';
 import { Public } from '../common/decorators/public.decorator';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { IpAddress } from '../common/decorators/ip-address.decorator';
@@ -19,6 +21,18 @@ export class AuthController {
   @Post('register')
   register(@Body() dto: RegisterDto) {
     return this.authService.register(dto);
+  }
+
+  @Public()
+  @Post('self-register')
+  selfRegister(@Body() dto: SelfRegisterDto) {
+    return this.authService.selfRegister(dto);
+  }
+
+  @Public()
+  @Post('self-register-lecturer')
+  selfRegisterLecturer(@Body() dto: LecturerSelfRegisterDto) {
+    return this.authService.selfRegisterLecturer(dto);
   }
 
   @Public()

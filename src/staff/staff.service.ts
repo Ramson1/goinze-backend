@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
 import type { Paginated } from '../lib/types';
 import { PrismaService } from '../prisma/prisma.service';
 import { paginated } from '../common/utils/pagination.util';
@@ -122,7 +122,155 @@ export class StaffService {
     return this.prisma.db.staff.delete({ where: { id } });
   }
 
-  /** Toggle a staff member's active status (disable/enable). */
+  /**
+   * Find all lecturers with a portal account awaiting admin approval (User.status = PENDING).
+   */
+  async findPendingApprovals(schoolId: string | null) {
+    const where: Record<string, any> = {
+      userId: { not: null },
+      isLecturer: true,
+      user: { status: 'PENDING' },
+    };
+    if (schoolId) where.schoolId = schoolId;
+    return this.prisma.db.staff.findMany({
+      where,
+      include: {
+        user: { select: { id: true, email: true, firstName: true, lastName: true, createdAt: true } },
+        department: true,
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+  }
+
+  /**
+   * Approve a self-registered lecturer's portal account:
+   * activate the linked User.
+   */
+  async approvePortalAccount(staffId: string, schoolId: string | null) {
+    const where: Record<string, any> = { id: staffId };
+    if (schoolId) where.schoolId = schoolId;
+    const staff = await this.prisma.db.staff.findFirst({
+      where,
+      include: { user: true },
+    });
+    if (!staff) throw new NotFoundException('Staff not found');
+    if (!staff.userId) throw new BadRequestException('This staff member has no portal account linked.');
+    if (staff.user?.status !== 'PENDING') {
+      throw new BadRequestException('This account is not pending approval.');
+    }
+
+    await this.prisma.db.$transaction(async (tx) => {
+      await tx.user.update({
+        where: { id: staff.userId! },
+        data: { status: 'ACTIVE' },
+      });
+    });
+
+    return { success: true };
+  }
+
+  /**
+   * Decline a self-registered lecturer's portal account (linked flow):
+   * delete the User record and unlink from the Staff.
+   */
+  async declinePortalAccount(staffId: string, schoolId: string | null) {
+    const where: Record<string, any> = { id: staffId };
+    if (schoolId) where.schoolId = schoolId;
+    const staff = await this.prisma.db.staff.findFirst({
+      where,
+      include: { user: true },
+    });
+    if (!staff) throw new NotFoundException('Staff not found');
+    if (!staff.userId) throw new BadRequestException('This staff member has no portal account linked.');
+    if (staff.user?.status !== 'PENDING') {
+      throw new BadRequestException('This account is not pending approval.');
+    }
+
+    await this.prisma.db.$transaction(async (tx) => {
+      await tx.user.delete({ where: { id: staff.userId! } });
+      await tx.staff.update({
+        where: { id: staffId },
+        data: { userId: null },
+      });
+    });
+
+    return { success: true };
+  }
+
+  /**
+   * Find all PENDING lecturer-role Users that have no linked Staff record.
+   */
+  async findUnlinkedPendingUsers(schoolId: string | null) {
+    return this.prisma.db.user.findMany({
+      where: {
+        schoolId: schoolId ?? undefined,
+        role: 'LECTURER',
+        status: 'PENDING',
+        staff: null,
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+  }
+
+  /**
+   * Approve an unlinked PENDING lecturer user: create a Staff record from the User + metadata,
+   * link them, and activate the User.
+   */
+  async approveUnlinkedUser(userId: string, schoolId: string | null) {
+    const user = await this.prisma.db.user.findFirst({
+      where: { id: userId, schoolId: schoolId ?? undefined, role: 'LECTURER', status: 'PENDING', staff: null },
+    });
+    if (!user) throw new NotFoundException('Pending user not found');
+
+    const meta = (user as any).metadata as { staffNumber?: string; departmentId?: string; courseIds?: string[] } | null;
+
+    const staffRecord = await this.prisma.db.$transaction(async (tx) => {
+      const s = await tx.staff.create({
+        data: {
+          schoolId: user.schoolId!,
+          userId: user.id,
+          firstName: user.firstName,
+          lastName: user.lastName,
+          email: user.email,
+          phone: user.phone,
+          staffNumber: meta?.staffNumber ?? null,
+          departmentId: meta?.departmentId ?? null,
+          isLecturer: true,
+          isActive: true,
+        },
+      });
+      // Create course allocations from self-registration
+      if (meta?.courseIds && meta.courseIds.length > 0) {
+        for (const courseId of meta.courseIds) {
+          await tx.courseAllocation.create({
+            data: { courseId, staffId: s.id },
+          }).catch(() => { /* ignore duplicate allocation errors */ });
+        }
+      }
+      await tx.user.update({
+        where: { id: userId },
+        data: { status: 'ACTIVE' },
+      });
+      return s;
+    });
+
+    return { success: true };
+  }
+
+  /**
+   * Decline an unlinked PENDING lecturer user: delete the User record entirely.
+   */
+  async declineUnlinkedUser(userId: string, schoolId: string | null) {
+    const user = await this.prisma.db.user.findFirst({
+      where: { id: userId, schoolId: schoolId ?? undefined, role: 'LECTURER', status: 'PENDING', staff: null },
+    });
+    if (!user) throw new NotFoundException('Pending user not found');
+
+    await this.prisma.db.user.delete({ where: { id: userId } });
+
+    return { success: true };
+  }
+
   async toggleActive(id: string) {
     const staff = await this.prisma.db.staff.findUnique({ where: { id } });
     if (!staff) throw new NotFoundException('Staff not found');

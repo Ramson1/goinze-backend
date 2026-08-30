@@ -24,6 +24,13 @@ import { CurrentUser } from '../common/decorators/current-user.decorator';
 export class AcademicsController {
   constructor(private readonly academicsService: AcademicsService) {}
 
+  // ---- Schools ----
+  @Public()
+  @Get('schools')
+  listSchools() {
+    return this.academicsService.listSchools();
+  }
+
   // ---- Faculties ----
   @Public()
   @Get('faculties')
@@ -156,6 +163,15 @@ export class AcademicsController {
   }
 
   // ---- Courses ----
+  @Public()
+  @Get('courses-list')
+  listCoursesPublic(
+    @Query('schoolId') schoolId?: string,
+    @Query('departmentId') departmentId?: string,
+  ) {
+    return this.academicsService.listCoursesFlat(schoolId, departmentId);
+  }
+
   @Get('courses')
   @Roles('SCHOOL_ADMIN', 'LECTURER', 'STUDENT')
   listCourses(

@@ -2,6 +2,7 @@ import { Injectable, NotFoundException, BadRequestException } from '@nestjs/comm
 import { computeGpa, resolveGrade, generateResultPin } from '../lib/utils';
 import type { CourseGrade } from '../lib/utils';
 import { PrismaService } from '../prisma/prisma.service';
+import { CommunicationService } from '../communication/communication.service';
 import {
   EnterScoreDto,
   BulkUploadDto,
@@ -15,7 +16,7 @@ import {
  */
 @Injectable()
 export class ResultsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(private readonly prisma: PrismaService, private readonly comms: CommunicationService) {}
 
   private computeScore(caScore: number, examScore: number) {
     const totalScore = Math.max(0, Math.min(100, caScore + examScore));
@@ -301,10 +302,44 @@ export class ResultsService {
   }
 
   /** Publish a course's approved/locked results so students can see them. */
-  publishCourse(schoolId: string | null, courseId: string) {
-    return this.batchSetStatus(schoolId, courseId, ['APPROVED', 'LOCKED'], 'PUBLISHED', {
+  async publishCourse(schoolId: string | null, courseId: string) {
+    const result = await this.batchSetStatus(schoolId, courseId, ['APPROVED', 'LOCKED'], 'PUBLISHED', {
       publishedAt: new Date(),
     });
+
+    // Notify students and SCHOOL_ADMIN about published results (fire-and-forget)
+    if (schoolId) {
+      const sid: string = schoolId;
+      const course = await this.prisma.db.course.findUnique({
+        where: { id: courseId },
+        select: { code: true, title: true, departmentId: true },
+      });
+      if (course) {
+        const courseName = `${course.code} — ${course.title}`;
+        if (course.departmentId) {
+          this.comms
+            .notifyStudentsByDepartment(
+              sid,
+              course.departmentId,
+            'Results Published',
+            `Results for ${courseName} have been published. You can now view your results.`,
+            { courseId },
+          )
+          .catch(() => {});
+        }
+        this.comms
+          .notifyUsersByRole(
+            sid,
+            'SCHOOL_ADMIN',
+            'Results Published',
+            `Results for ${courseName} have been published by an admin.`,
+            { courseId },
+          )
+          .catch(() => {});
+      }
+    }
+
+    return result;
   }
 
   /** Compute GPA/CGPA for a student across all published results. */

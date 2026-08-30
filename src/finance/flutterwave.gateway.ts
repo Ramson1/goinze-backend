@@ -58,6 +58,16 @@ export class FlutterwaveGateway {
     return this.config.get<string>('FLUTTERWAVE_WEBHOOK_HASH') || undefined;
   }
 
+  /** Portal Access Fee — secondary account public key. */
+  get portalAccessPublicKey(): string | undefined {
+    return this.config.get<string>('FLUTTERWAVE_PORTAL_ACCESS_PUBLIC_KEY') || undefined;
+  }
+
+  /** Portal Access Fee — secondary account secret key. */
+  get portalAccessSecretKey(): string | undefined {
+    return this.config.get<string>('FLUTTERWAVE_PORTAL_ACCESS_SECRET_KEY') || undefined;
+  }
+
   get isConfigured(): boolean {
     return Boolean(this.secretKey);
   }
@@ -118,6 +128,31 @@ export class FlutterwaveGateway {
     const res = await fetch(
       `${this.baseUrl}/transactions/verify_by_reference?tx_ref=${encodeURIComponent(txRef)}`,
       { headers: { Authorization: `Bearer ${this.secretKey}` } },
+    );
+    const json = (await res.json()) as any;
+    if (!res.ok || json?.status !== 'success') {
+      throw new Error(`Flutterwave verify failed: ${json?.message ?? res.statusText}`);
+    }
+    const d = json.data;
+    return {
+      status: d.status,
+      amount: Number(d.amount),
+      currency: d.currency,
+      txRef: d.tx_ref,
+      flwRef: d.flw_ref,
+    };
+  }
+
+  /** Verify a transaction using the Portal Access secondary account secret key. */
+  async verifyWithPortalAccessKey(txRef: string): Promise<FlutterwaveVerifyResult> {
+    const portalSecretKey = this.portalAccessSecretKey;
+    if (!portalSecretKey) {
+      throw new Error('FLUTTERWAVE_PORTAL_ACCESS_SECRET_KEY not configured');
+    }
+
+    const res = await fetch(
+      `${this.baseUrl}/transactions/verify_by_reference?tx_ref=${encodeURIComponent(txRef)}`,
+      { headers: { Authorization: `Bearer ${portalSecretKey}` } },
     );
     const json = (await res.json()) as any;
     if (!res.ok || json?.status !== 'success') {

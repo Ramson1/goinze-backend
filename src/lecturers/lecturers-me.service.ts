@@ -249,8 +249,31 @@ export class LecturersMeService {
     });
     const resultByStudent = new Map(results.map((r) => [r.studentId, r]));
 
+    // Fetch attendance counts for all students in this course (current session).
+    const sessionStart = session.startDate ?? new Date(new Date().getFullYear(), 0, 1);
+    const sessionEnd = session.endDate ?? new Date(new Date().getFullYear(), 11, 31);
+    const attendanceRecords = await this.prisma.db.attendanceRecord.findMany({
+      where: {
+        courseId,
+        date: { gte: sessionStart, lte: sessionEnd },
+      },
+      select: { studentId: true, status: true },
+    });
+    const attByStudent = new Map<string, { present: number; absent: number; late: number; excused: number }>();
+    for (const rec of attendanceRecords) {
+      if (!rec.studentId) continue;
+      const entry = attByStudent.get(rec.studentId) ?? { present: 0, absent: 0, late: 0, excused: 0 };
+      if (rec.status === 'PRESENT') entry.present++;
+      else if (rec.status === 'ABSENT') entry.absent++;
+      else if (rec.status === 'LATE') entry.late++;
+      else if (rec.status === 'EXCUSED') entry.excused++;
+      attByStudent.set(rec.studentId, entry);
+    }
+
     const students = Array.from(seen.values()).map((st) => {
       const r = resultByStudent.get(st.studentId);
+      const att = attByStudent.get(st.studentId) ?? { present: 0, absent: 0, late: 0, excused: 0 };
+      const total = att.present + att.absent + att.late + att.excused;
       return {
         ...st,
         caScore: r ? Number(r.caScore) : null,
@@ -258,6 +281,14 @@ export class LecturersMeService {
         totalScore: r ? Number(r.totalScore) : null,
         grade: r?.grade ?? null,
         resultStatus: r?.status ?? null,
+        attendance: {
+          present: att.present,
+          absent: att.absent,
+          late: att.late,
+          excused: att.excused,
+          total,
+          rate: total > 0 ? Math.round(((att.present + att.late) / total) * 100) : 0,
+        },
       };
     });
 

@@ -13,6 +13,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { paginated } from '../common/utils/pagination.util';
 import { PaginationDto } from '../common/dto/pagination.dto';
 import { FlutterwaveGateway } from './flutterwave.gateway';
+import { PaystackGateway } from './paystack.gateway';
 import { CommunicationService } from '../communication/communication.service';
 import {
   CreateFeeStructureDto,
@@ -31,6 +32,7 @@ export class FinanceService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly gateway: FlutterwaveGateway,
+    private readonly paystackGateway: PaystackGateway,
     private readonly config: ConfigService,
     private readonly comms: CommunicationService,
   ) {}
@@ -172,6 +174,16 @@ export class FinanceService {
       );
     }
 
+    // Check developer payment setting if purpose is DEVELOPER_ACCESS
+    if (dto.purpose === 'DEVELOPER_ACCESS') {
+      const devPaymentSetting = await this.prisma.db.schoolSetting.findUnique({
+        where: { schoolId_key: { schoolId: resolvedSchoolId, key: 'payment.developer_payment_enabled' } },
+      });
+      if (devPaymentSetting && devPaymentSetting.value === false) {
+        throw new BadRequestException('Developer account payments are currently disabled.');
+      }
+    }
+
     const payment = await this.prisma.db.payment.create({
       data: {
         schoolId: resolvedSchoolId,
@@ -188,15 +200,30 @@ export class FinanceService {
     });
 
     // Return just the DB record and reference.
-    // The frontend will use Flutterwave inline checkout with this reference,
-    // passing the customer email directly to Flutterwave.
-    return { payment, reference, checkoutUrl: '', live: this.gateway.isConfigured };
+    // The frontend will use the gateway inline checkout with this reference,
+    // passing the customer email directly to the gateway.
+    const chosenGateway = dto.gateway === 'PAYSTACK' ? this.paystackGateway : this.gateway;
+    return { payment, reference, checkoutUrl: '', live: chosenGateway.isConfigured };
   }
 
   /**
    * Verify a payment by reference, mark it successful, post a ledger credit,
    * and — for acceptance-fee payments — advance the linked application.
    */
+  /**
+   * Get payment status by reference (for polling fallback).
+   */
+  async getPaymentStatus(reference: string) {
+    const payment = await this.prisma.db.payment.findUnique({
+      where: { reference },
+      select: { status: true },
+    });
+    if (!payment) {
+      throw new NotFoundException('Payment not found');
+    }
+    return { status: payment.status };
+  }
+
   async verifyPayment(dto: VerifyPaymentDto) {
     const payment = await this.prisma.db.payment.findUnique({
       where: { reference: dto.reference },
@@ -216,13 +243,84 @@ export class FinanceService {
       return { ...payment, receipt: existingReceipt };
     }
 
-    const result = await this.gateway.verify(dto.reference);
+    // Verify against the correct gateway based on the payment record
+    let result: { status: string; amount: number; currency: string; txRef: string; flwRef?: string; gatewayRef?: string };
+
+    if (payment.gateway === 'PAYSTACK') {
+      const paystackResult = await this.paystackGateway.verify(dto.reference);
+      result = {
+        status: paystackResult.status === 'success' ? 'successful' : paystackResult.status,
+        amount: paystackResult.amount,
+        currency: paystackResult.currency,
+        txRef: paystackResult.txRef,
+        gatewayRef: paystackResult.gatewayRef,
+      };
+
+      // If Paystack primary fails, try secondary account (Portal Access Fee)
+      if (result.status !== 'successful') {
+        try {
+          const secondaryResult = await this.paystackGateway.verifyWithPortalAccessKey(dto.reference);
+          if (secondaryResult.status === 'success') {
+            return this.processSuccessfulPayment(payment, {
+              status: 'successful',
+              amount: secondaryResult.amount,
+              currency: secondaryResult.currency,
+              txRef: secondaryResult.txRef,
+              gatewayRef: secondaryResult.gatewayRef,
+            }, dto);
+          }
+        } catch (err) {
+          this.logger.warn('Paystack portal access key verification also failed');
+        }
+        throw new BadRequestException(
+          `Payment not successful (gateway status: ${result.status}).`,
+        );
+      }
+    } else {
+      // Default to Flutterwave (FLUTTERWAVE, BANK_TRANSFER, CASH, etc.)
+      const flwResult = await this.gateway.verify(dto.reference);
+      result = {
+        status: flwResult.status,
+        amount: flwResult.amount,
+        currency: flwResult.currency,
+        txRef: flwResult.txRef,
+        flwRef: flwResult.flwRef,
+      };
+
+      // If Flutterwave primary fails, try secondary account (Portal Access Fee)
+      if (result.status !== 'successful') {
+        try {
+          const secondaryResult = await this.gateway.verifyWithPortalAccessKey(dto.reference);
+          if (secondaryResult.status === 'successful') {
+            return this.processSuccessfulPayment(payment, secondaryResult, dto);
+          }
+        } catch (err) {
+          this.logger.warn('Portal access key verification also failed');
+        }
+        throw new BadRequestException(
+          `Payment not successful (gateway status: ${result.status}).`,
+        );
+      }
+    }
+
     if (result.status !== 'successful') {
       throw new BadRequestException(
         `Payment not successful (gateway status: ${result.status}).`,
       );
     }
 
+    return this.processSuccessfulPayment(payment, result, dto);
+  }
+
+  /**
+   * Process a successful payment verification: update payment status, credit ledger,
+   * handle application fees, generate receipt, and notify admin.
+   */
+  private async processSuccessfulPayment(
+    payment: any,
+    result: any,
+    dto: VerifyPaymentDto,
+  ) {
     // Use a transaction to prevent duplicate processing from concurrent webhooks
     const updated = await this.prisma.db.$transaction(async (tx) => {
       // Re-check status inside transaction (optimistic locking)
@@ -235,7 +333,7 @@ export class FinanceService {
         where: { id: payment.id },
         data: {
           status: 'SUCCESS',
-          gatewayRef: result.flwRef || dto.gatewayRef,
+          gatewayRef: result.flwRef || result.gatewayRef || dto.gatewayRef,
           paidAt: new Date(),
         },
       });
@@ -413,6 +511,148 @@ export class FinanceService {
     }
     await this.verifyPayment({ reference: txRef });
     return { processed: true, reference: txRef };
+  }
+
+  /** Process a Paystack webhook event. */
+  async handlePaystackWebhook(payload: any, signature?: string) {
+    // Verify webhook signature if PAYSTACK_WEBHOOK_SECRET is configured
+    const webhookSecret = this.paystackGateway.webhookSecret;
+    if (webhookSecret) {
+      if (!signature) {
+        this.logger.warn('Paystack webhook received without signature');
+        throw new UnauthorizedException('Missing webhook signature');
+      }
+      // Paystack uses HMAC SHA256 signature
+      const expectedSignature = crypto
+        .createHmac('sha256', webhookSecret)
+        .update(JSON.stringify(payload))
+        .digest('hex');
+      if (signature !== expectedSignature) {
+        this.logger.warn('Paystack webhook signature mismatch');
+        throw new UnauthorizedException('Invalid webhook signature');
+      }
+    }
+
+    // Paystack sends various event types; we care about charge.success
+    const event = payload?.event;
+    const data = payload?.data;
+    if (event !== 'charge.success') {
+      return { ignored: true, reason: `Event ${event} not handled` };
+    }
+
+    const reference: string | undefined = data?.reference;
+    if (!reference) return { ignored: true };
+
+    const payment = await this.prisma.db.payment.findUnique({
+      where: { reference },
+    });
+    if (!payment || payment.status === 'SUCCESS') {
+      return { ignored: true };
+    }
+    await this.verifyPayment({ reference });
+    return { processed: true, reference };
+  }
+
+  /**
+   * Get available payment gateways for a school.
+   * Reads SchoolSetting keys to determine which gateways are enabled,
+   * and cross-references with env-level configuration.
+   */
+  async getAvailableGateways(schoolId: string | null): Promise<{
+    gateways: { id: string; name: string; publicKey: string; enabled: boolean }[];
+  }> {
+    const gateways: { id: string; name: string; publicKey: string; enabled: boolean }[] = [];
+
+    // Read gateway settings from DB
+    let flutterwaveEnabled = true;
+    let paystackEnabled = true;
+    if (schoolId) {
+      const settings = await this.prisma.db.schoolSetting.findMany({
+        where: {
+          schoolId,
+          key: { in: ['payment.flutterwave_enabled', 'payment.paystack_enabled'] },
+        },
+      });
+      for (const s of settings) {
+        if (s.key === 'payment.flutterwave_enabled') flutterwaveEnabled = s.value !== false;
+        if (s.key === 'payment.paystack_enabled') paystackEnabled = s.value !== false;
+      }
+    }
+
+    // Flutterwave — include if enabled in settings (regardless of key configuration)
+    if (flutterwaveEnabled) {
+      gateways.push({
+        id: 'FLUTTERWAVE',
+        name: 'Flutterwave',
+        publicKey: this.gateway.publicKey || '',
+        enabled: true,
+      });
+    }
+
+    // Paystack — include if enabled in settings (regardless of key configuration)
+    if (paystackEnabled) {
+      gateways.push({
+        id: 'PAYSTACK',
+        name: 'Paystack',
+        publicKey: this.paystackGateway.publicKey || '',
+        enabled: true,
+      });
+    }
+
+    return { gateways };
+  }
+
+  /**
+   * Get available payment gateways for Portal Access fee (secondary accounts).
+   * Uses separate settings keys (payment.portal_access_*) so portal access
+   * gateway visibility can be controlled independently from student payments.
+   */
+  async getPortalAccessGateways(schoolId: string | null): Promise<{
+    gateways: { id: string; name: string; publicKey: string; enabled: boolean }[];
+  }> {
+    const gateways: { id: string; name: string; publicKey: string; enabled: boolean }[] = [];
+
+    // Read portal-access-specific gateway settings from DB
+    let flutterwaveEnabled = true;
+    let paystackEnabled = true;
+    if (schoolId) {
+      const settings = await this.prisma.db.schoolSetting.findMany({
+        where: {
+          schoolId,
+          key: { in: ['payment.portal_access_flutterwave_enabled', 'payment.portal_access_paystack_enabled'] },
+        },
+      });
+      for (const s of settings) {
+        if (s.key === 'payment.portal_access_flutterwave_enabled') flutterwaveEnabled = s.value !== false;
+        if (s.key === 'payment.portal_access_paystack_enabled') paystackEnabled = s.value !== false;
+      }
+    }
+
+    // Include gateways that are enabled in settings (regardless of key configuration)
+    if (flutterwaveEnabled) {
+      gateways.push({
+        id: 'FLUTTERWAVE',
+        name: 'Flutterwave',
+        publicKey: this.gateway.portalAccessPublicKey || '',
+        enabled: true,
+      });
+    }
+
+    if (paystackEnabled) {
+      gateways.push({
+        id: 'PAYSTACK',
+        name: 'Paystack',
+        publicKey: this.paystackGateway.portalAccessPublicKey || '',
+        enabled: true,
+      });
+    }
+
+    // Fallback: if no portal access gateways, return primary gateways
+    if (gateways.length === 0) {
+      return this.getAvailableGateways(schoolId);
+    }
+
+    return { gateways };
   }
 
   // ---- Application fees (pre-submission) ----

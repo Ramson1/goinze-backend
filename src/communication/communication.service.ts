@@ -329,6 +329,28 @@ export class CommunicationService {
       data: { updatedAt: new Date() },
     });
 
+    // Notify other participants about the new message (fire-and-forget)
+    this.prisma.db.conversationParticipant
+      .findMany({
+        where: { conversationId: data.conversationId, userId: { not: data.senderId } },
+        select: { userId: true },
+      })
+      .then((participants) => {
+        const recipientIds = participants.map((p) => p.userId);
+        if (recipientIds.length > 0) {
+          const senderName = message.sender
+            ? `${message.sender.firstName} ${message.sender.lastName}`
+            : 'Someone';
+          return this.notifyUsers(
+            recipientIds,
+            'New Message',
+            `${senderName}: ${data.body.length > 80 ? data.body.slice(0, 80) + '…' : data.body}`,
+            { conversationId: data.conversationId, messageId: message.id },
+          );
+        }
+      })
+      .catch(() => {});
+
     return {
       id: message.id,
       senderId: message.senderId,

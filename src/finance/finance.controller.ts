@@ -15,6 +15,7 @@ import {
 import type { SessionUser } from '../lib/types';
 import { FinanceService } from './finance.service';
 import { FlutterwaveGateway } from './flutterwave.gateway';
+import { PaystackGateway } from './paystack.gateway';
 import {
   CreateFeeStructureDto,
   UpdateFeeStructureDto,
@@ -37,6 +38,7 @@ export class FinanceController {
   constructor(
     private readonly financeService: FinanceService,
     private readonly gateway: FlutterwaveGateway,
+    private readonly paystackGateway: PaystackGateway,
   ) {}
 
   // ---- Fee structures ----
@@ -82,13 +84,66 @@ export class FinanceController {
     return this.financeService.getApplicationFees(null);
   }
 
-  /** Public endpoint to expose Flutterwave config (public key) to frontend. */
+  /** Public endpoint to expose available payment gateways. */
+  @Public()
+  @Get('payment-gateways')
+  async paymentGateways(
+    @Query('schoolSlug') schoolSlug?: string,
+    @CurrentUser() user?: SessionUser,
+  ) {
+    let schoolId: string | null = null;
+    if (schoolSlug) {
+      const school = await this.financeService['prisma'].db.school.findFirst({
+        where: { slug: schoolSlug },
+        select: { id: true },
+      });
+      schoolId = school?.id ?? null;
+    }
+    // Fall back to authenticated user's school
+    if (!schoolId && user?.schoolId) {
+      schoolId = user.schoolId;
+    }
+    return this.financeService.getAvailableGateways(schoolId);
+  }
+
+  /** Public endpoint to expose Portal Access payment gateways. */
+  @Public()
+  @Get('portal-access-gateways')
+  async portalAccessGateways(
+    @Query('schoolSlug') schoolSlug?: string,
+    @CurrentUser() user?: SessionUser,
+  ) {
+    let schoolId: string | null = null;
+    if (schoolSlug) {
+      const school = await this.financeService['prisma'].db.school.findFirst({
+        where: { slug: schoolSlug },
+        select: { id: true },
+      });
+      schoolId = school?.id ?? null;
+    }
+    // Fall back to authenticated user's school
+    if (!schoolId && user?.schoolId) {
+      schoolId = user.schoolId;
+    }
+    return this.financeService.getPortalAccessGateways(schoolId);
+  }
+
+  /** @deprecated Use /payment-gateways instead. Kept for backward compatibility. */
   @Public()
   @Get('flutterwave-config')
   flutterwaveConfig() {
     return {
       publicKey: this.gateway.publicKey || '',
       isConfigured: this.gateway.isConfigured,
+    };
+  }
+
+  /** @deprecated Use /portal-access-gateways instead. Kept for backward compatibility. */
+  @Public()
+  @Get('portal-access-public-key')
+  portalAccessPublicKey() {
+    return {
+      publicKey: this.gateway.portalAccessPublicKey || '',
     };
   }
 
@@ -118,6 +173,13 @@ export class FinanceController {
     return this.financeService.verifyPayment(dto);
   }
 
+  /** Public endpoint to check payment status by reference (for polling). */
+  @Public()
+  @Get('payments/status/:reference')
+  async getPaymentStatus(@Param('reference') reference: string) {
+    return this.financeService.getPaymentStatus(reference);
+  }
+
   /** Flutterwave webhook (charge.completed). */
   @Public()
   @Post('payments/webhook')
@@ -126,6 +188,16 @@ export class FinanceController {
     @Headers('verifi-hash') signature?: string,
   ) {
     return this.financeService.handleWebhook(payload, signature);
+  }
+
+  /** Paystack webhook endpoint. */
+  @Public()
+  @Post('payments/paystack-webhook')
+  async paystackWebhook(
+    @Body() payload: any,
+    @Headers('x-paystack-signature') signature?: string,
+  ) {
+    return this.financeService.handlePaystackWebhook(payload, signature);
   }
 
   // ---- Manual payment (admin) ----

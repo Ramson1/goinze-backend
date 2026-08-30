@@ -19,6 +19,10 @@ import { CurrentUser } from '../common/decorators/current-user.decorator';
 export class AttendanceController {
   constructor(private readonly attendanceService: AttendanceService) {}
 
+  // -----------------------------------------------------------------------
+  // Marking endpoints
+  // -----------------------------------------------------------------------
+
   @Post('mark')
   @Roles('SCHOOL_ADMIN', 'LECTURER')
   mark(
@@ -31,6 +35,16 @@ export class AttendanceController {
     },
   ) {
     return this.attendanceService.markManual(user.schoolId, data);
+  }
+
+  /** Lecturer scans a student's ID card QR code to mark attendance. */
+  @Post('scan-qr')
+  @Roles('SCHOOL_ADMIN', 'LECTURER')
+  scanQr(
+    @CurrentUser() user: SessionUser,
+    @Body() data: { qrData: string; courseId: string },
+  ) {
+    return this.attendanceService.scanQr(user.schoolId, data);
   }
 
   @Post('qr')
@@ -51,6 +65,10 @@ export class AttendanceController {
     return this.attendanceService.digitalIdCheckIn(user.schoolId, data);
   }
 
+  // -----------------------------------------------------------------------
+  // Query endpoints — static paths BEFORE parametric routes
+  // -----------------------------------------------------------------------
+
   @Get()
   @Roles('SCHOOL_ADMIN', 'LECTURER')
   list(
@@ -58,12 +76,35 @@ export class AttendanceController {
     @Query('studentId') studentId?: string,
     @Query('courseId') courseId?: string,
     @Query('date') date?: string,
+    @Query('limit') limit?: string,
   ) {
     return this.attendanceService.list(user.schoolId, {
       studentId,
       courseId,
       date,
+      limit: limit ? parseInt(limit, 10) : undefined,
     });
+  }
+
+  /** Grouped attendance session summaries for the overview dashboard. */
+  @Get('overview')
+  @Roles('SCHOOL_ADMIN', 'LECTURER')
+  overview(
+    @CurrentUser() user: SessionUser,
+    @Query('courseId') courseId?: string,
+  ) {
+    return this.attendanceService.overview(user.schoolId, { courseId });
+  }
+
+  /** Individual attendance records for a specific course + date. */
+  @Get('session/:courseId/:date')
+  @Roles('SCHOOL_ADMIN', 'LECTURER')
+  sessionDetail(
+    @CurrentUser() user: SessionUser,
+    @Param('courseId') courseId: string,
+    @Param('date') date: string,
+  ) {
+    return this.attendanceService.sessionDetail(user.schoolId, courseId, date);
   }
 
   @Get('report/:studentId')
