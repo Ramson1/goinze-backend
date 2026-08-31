@@ -26,6 +26,7 @@ import { SystemAdminModule } from './system-admin/system-admin.module';
 import { WebsiteCmsModule } from './website-cms/website-cms.module';
 import { HealthModule } from './health/health.module';
 import { ContactModule } from './contact/contact.module';
+import { AlumniModule } from './alumni/alumni.module';
 import { MailModule } from './mail/mail.module';
 import { RootModule } from './root/root.module';
 
@@ -56,6 +57,7 @@ import { RootModule } from './root/root.module';
     WebsiteCmsModule,
     HealthModule,
     ContactModule,
+    AlumniModule,
     MailModule,
     RootModule,
   ],

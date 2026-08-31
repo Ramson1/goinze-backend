@@ -1233,3 +1233,20 @@ model SchoolSetting {
 
   @@unique([schoolId, key])
 }
+
+// ------------------------------------------------------------
+// MODULE 19 — ALUMNI REGISTRATION
+// ------------------------------------------------------------
+
+model AlumniRegistration {
+  id              String   @id @default(cuid())
+  schoolId        String?
+  name            String
+  email           String
+  programme       String
+  graduationYear  Int
+  currentRole     String?
+  status          String   @default("PENDING")
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
