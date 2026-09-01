@@ -1,12 +1,18 @@
-import { Injectable, NotFoundException, ForbiddenException } from '@nestjs/common';
+import { Injectable, NotFoundException, ForbiddenException, Logger } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { MailService } from '../mail/mail.service';
 
 /**
  * Communication: announcements, direct messages, conversations, and notifications.
  */
 @Injectable()
 export class CommunicationService {
-  constructor(private readonly prisma: PrismaService) {}
+  private readonly logger = new Logger(CommunicationService.name);
+
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly mail: MailService,
+  ) {}
 
   // ---- Announcements ----
   listAnnouncements(schoolId: string | null) {
@@ -617,5 +623,161 @@ export class CommunicationService {
     if (userIds.length > 0) {
       return this.notifyUsers(userIds, title, body, metadata);
     }
+  }
+
+  // ---- Bulk Email (Email Blast) ----
+
+  /**
+   * Resolve recipient email addresses based on group selection and/or explicit user IDs.
+   */
+  async resolveEmailRecipients(
+    schoolId: string | null,
+    groups: string[],
+    specificUserIds?: string[],
+  ): Promise<{ email: string; name: string }[]> {
+    const where: any = {};
+    if (schoolId) where.schoolId = schoolId;
+
+    const recipients: { email: string; name: string }[] = [];
+    const seen = new Set<string>();
+
+    const addUsers = (users: { email: string; firstName: string; lastName: string }[]) => {
+      for (const u of users) {
+        if (!seen.has(u.email)) {
+          seen.add(u.email);
+          recipients.push({ email: u.email, name: `${u.firstName} ${u.lastName}` });
+        }
+      }
+    };
+
+    if (groups.includes('ALL_STUDENTS')) {
+      const students = await this.prisma.db.user.findMany({
+        where: { ...where, role: 'STUDENT' },
+        select: { email: true, firstName: true, lastName: true },
+      });
+      addUsers(students);
+    }
+
+    if (groups.includes('ALL_STAFF') || groups.includes('ALL_LECTURERS')) {
+      if (groups.includes('ALL_LECTURERS') && !groups.includes('ALL_STAFF')) {
+        // Only lecturers
+        const staff = await this.prisma.db.user.findMany({
+          where: { ...where, role: 'LECTURER' },
+          select: { email: true, firstName: true, lastName: true },
+        });
+        addUsers(staff);
+      } else {
+        // ALL_STAFF — all staff-role users
+        const staff = await this.prisma.db.user.findMany({
+          where: { ...where, OR: [{ role: 'LECTURER' }, { role: 'SCHOOL_ADMIN' }, { role: 'ADMISSION_OFFICER' }, { role: 'ACCOUNTANT' }] },
+          select: { email: true, firstName: true, lastName: true },
+        });
+        addUsers(staff);
+      }
+    }
+
+    if (specificUserIds && specificUserIds.length > 0) {
+      const users = await this.prisma.db.user.findMany({
+        where: { id: { in: specificUserIds } },
+        select: { email: true, firstName: true, lastName: true },
+      });
+      addUsers(users);
+    }
+
+    return recipients;
+  }
+
+  /**
+   * Send a school-branded bulk email to resolved recipients.
+   */
+  async sendBulkEmail(
+    schoolId: string | null,
+    data: {
+      subject: string;
+      body: string;
+      groups: string[];
+      specificUserIds?: string[];
+    },
+  ) {
+    // Resolve school info for branding
+    let schoolName = 'Goinze International School';
+    let schoolLogoUrl = '';
+    let schoolEmail = '';
+    if (schoolId) {
+      const school = await this.prisma.db.school.findUnique({ where: { id: schoolId } });
+      if (school) {
+        schoolName = school.name;
+        schoolLogoUrl = school.logoUrl ?? '';
+        schoolEmail = school.email ?? '';
+      }
+    }
+
+    const recipients = await this.resolveEmailRecipients(
+      schoolId,
+      data.groups,
+      data.specificUserIds,
+    );
+
+    if (recipients.length === 0) {
+      return { sent: 0, failed: 0, total: 0, message: 'No recipients found for the selected criteria.' };
+    }
+
+    const emailHtml = this.renderBulkEmailHtml({
+      schoolName,
+      schoolLogoUrl,
+      schoolEmail,
+      body: data.body,
+    });
+
+    let sent = 0;
+    let failed = 0;
+
+    // Send individually so each recipient gets a personalised feel
+    for (const r of recipients) {
+      try {
+        await this.mail.sendEmail(r.email, data.subject, emailHtml);
+        sent++;
+      } catch (err) {
+        this.logger.error(`Failed to send email to ${r.email}`, err instanceof Error ? err.message : '');
+        failed++;
+      }
+    }
+
+    return { sent, failed, total: recipients.length };
+  }
+
+  /**
+   * Render a school-branded HTML email template for bulk emails.
+   */
+  private renderBulkEmailHtml(d: {
+    schoolName: string;
+    schoolLogoUrl: string;
+    schoolEmail: string;
+    body: string;
+  }): string {
+    const logoFallback = 'https://goinzeschool.vercel.app/logo.png';
+    const logoUrl = d.schoolLogoUrl || logoFallback;
+    return `<!doctype html>
+<html>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="font-family:Arial,Helvetica,sans-serif;background:#f1f5f9;margin:0;padding:32px;">
+  <div style="max-width:640px;margin:0 auto;background:#ffffff;border-radius:12px;overflow:hidden;border:1px solid #e2e8f0;">
+    <!-- Header -->
+    <div style="background:linear-gradient(135deg,#1e3a5f,#0f766e);padding:28px 32px;text-align:center;">
+      <img src="${logoUrl}" alt="${d.schoolName}" style="max-height:56px;margin:0 auto 12px;display:block;border-radius:8px;" />
+      <h1 style="color:#ffffff;margin:0;font-size:20px;font-weight:700;letter-spacing:.3px;">${d.schoolName}</h1>
+    </div>
+    <!-- Body -->
+    <div style="padding:32px;">
+      ${d.body}
+    </div>
+    <!-- Footer -->
+    <div style="background:#f8fafc;padding:20px 32px;text-align:center;border-top:1px solid #e2e8f0;">
+      <p style="margin:0 0 4px;font-size:12px;color:#64748b;">${d.schoolName}${d.schoolEmail ? ` &middot; <a href="mailto:${d.schoolEmail}" style="color:#0f766e;">${d.schoolEmail}</a>` : ''}</p>
+      <p style="margin:0;font-size:11px;color:#94a3b8;">This is an official email from ${d.schoolName}. If you believe you received this in error, please contact the administration office.</p>
+    </div>
+  </div>
+</body>
+</html>`;
   }
 }

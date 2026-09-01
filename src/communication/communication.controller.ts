@@ -193,4 +193,36 @@ export class CommunicationController {
   markNotificationRead(@Param('id') id: string) {
     return this.communicationService.markNotificationRead(id);
   }
+
+  // ---- Bulk Email (Email Blast) ----
+  @Post('email-blast')
+  @Roles('SCHOOL_ADMIN', 'SUPER_ADMIN')
+  sendBulkEmail(
+    @CurrentUser() user: SessionUser,
+    @Body() data: {
+      subject: string;
+      body: string;
+      groups: string[];
+      specificUserIds?: string[];
+    },
+  ) {
+    return this.communicationService.sendBulkEmail(user.schoolId, data);
+  }
+
+  /** Resolve recipient count for the current selection (dry-run preview). */
+  @Post('email-blast/preview')
+  @Roles('SCHOOL_ADMIN', 'SUPER_ADMIN')
+  previewEmailBlast(
+    @CurrentUser() user: SessionUser,
+    @Body() data: {
+      groups: string[];
+      specificUserIds?: string[];
+    },
+  ) {
+    return this.communicationService.resolveEmailRecipients(
+      user.schoolId,
+      data.groups,
+      data.specificUserIds,
+    );
+  }
 }
