@@ -469,7 +469,7 @@ export class AdmissionsService {
     ]);
 
     const portalUrl =
-      this.config.get<string>('STUDENT_PORTAL_URL') || 'http://localhost:3002';
+      this.config.get<string>('STUDENT_PORTAL_URL') || 'https://student-mnx7td3pg-black-box-tech-s-projects.vercel.app';
 
     // Build an absolute logo URL — relative paths like /logo.png break in data-URLs and emails
     let schoolLogoUrl = school?.logoUrl || '';
