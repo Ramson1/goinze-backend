@@ -35,6 +35,36 @@ export class AdmissionsService {
   async apply(schoolId: string | null, dto: ApplyDto) {
     const school = await this.resolveSchool(schoolId, dto.schoolSlug, dto.schoolCode);
 
+    // ── Pre-admission fee gate ──
+    // Check if the school has APPLICATION_FORM or ENTRANCE_EXAM fees configured.
+    // If so, a valid payment reference is required to submit.
+    const requiredFees = await this.prisma.db.feeStructure.findMany({
+      where: {
+        schoolId: school.id,
+        type: { in: ['APPLICATION_FORM', 'ENTRANCE_EXAM'] },
+      },
+      select: { id: true, name: true, type: true, amount: true },
+    });
+
+    if (requiredFees.length > 0) {
+      if (!dto.paymentReference) {
+        throw new BadRequestException(
+          'Application form fees must be paid before submitting. Please complete the payment first.',
+        );
+      }
+
+      // Validate the payment exists and was successful
+      const payment = await this.prisma.db.payment.findUnique({
+        where: { reference: dto.paymentReference },
+      });
+
+      if (!payment || payment.schoolId !== school.id || payment.status !== 'SUCCESS') {
+        throw new BadRequestException(
+          'Invalid or unsuccessful payment. Please complete payment before submitting.',
+        );
+      }
+    }
+
     const application = await this.prisma.db.application.create({
       data: {
         schoolId: school.id,
@@ -72,6 +102,23 @@ export class AdmissionsService {
       },
       include: { documents: false },
     });
+
+    // ── Link payment to application and mark fees paid ──
+    if (dto.paymentReference && requiredFees.length > 0) {
+      await this.prisma.db.$transaction([
+        this.prisma.db.payment.update({
+          where: { reference: dto.paymentReference },
+          data: {
+            applicationId: application.id,
+            metadata: { purpose: 'APPLICATION_FORM' },
+          },
+        }),
+        this.prisma.db.application.update({
+          where: { id: application.id },
+          data: { applicationFormFeePaid: true },
+        }),
+      ]);
+    }
 
     // Notify admin about new application
     this.comms

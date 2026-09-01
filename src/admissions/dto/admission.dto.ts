@@ -128,6 +128,11 @@ export class ApplyDto {
   @IsOptional()
   @IsBoolean()
   declarationAgreed?: boolean;
+
+  /** Payment reference from a successful pre-admission fee payment. */
+  @IsOptional()
+  @IsString()
+  paymentReference?: string;
 }
 
 export class ReviewApplicationDto {
