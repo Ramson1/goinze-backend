@@ -215,3 +215,18 @@ export class BulkCreateQuestionsDto {
   @Type(() => BulkQuestionItemDto)
   questions!: BulkQuestionItemDto[];
 }
+
+export class AutoSaveAttemptDto {
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => AnswerDto)
+  answers!: AnswerDto[];
+}
+
+export class ImportEncryptedBackupDto {
+  @IsString()
+  examId!: string;
+
+  @IsString()
+  encryptedPayload!: string;
+}

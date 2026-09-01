@@ -1,4 +1,6 @@
 import { Injectable, Logger, NotFoundException, BadRequestException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import * as crypto from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { CommunicationService } from '../communication/communication.service';
 import {
@@ -24,6 +26,7 @@ export class CbtService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly comms: CommunicationService,
+    private readonly config: ConfigService,
   ) {}
 
   // ---- Question banks ----
@@ -416,5 +419,126 @@ export class CbtService {
     }
 
     return { count: created.length, questions: created };
+  }
+
+  // ---- Auto-save ----
+  async autoSaveAttempt(attemptId: string, dto: import('./dto/cbt.dto').AutoSaveAttemptDto) {
+    const attempt = await this.prisma.db.examAttempt.findUnique({
+      where: { id: attemptId },
+    });
+    if (!attempt) throw new NotFoundException('Attempt not found');
+    if (attempt.status !== 'IN_PROGRESS') {
+      throw new BadRequestException('Attempt is no longer in progress');
+    }
+
+    await this.prisma.db.examAttempt.update({
+      where: { id: attemptId },
+      data: { autoSaveData: { answers: dto.answers, savedAt: new Date().toISOString() } as any },
+    });
+
+    return { success: true };
+  }
+
+  // ---- Encrypted backup import ----
+  async importEncryptedBackup(dto: import('./dto/cbt.dto').ImportEncryptedBackupDto) {
+    const encryptionKey = this.config.get<string>('CBT_ENCRYPTION_KEY');
+    if (!encryptionKey) {
+      throw new BadRequestException('Server encryption key not configured');
+    }
+
+    // Parse the encrypted payload
+    let envelope: { iv: string; salt: string; data: string };
+    try {
+      envelope = JSON.parse(dto.encryptedPayload);
+    } catch {
+      throw new BadRequestException('Invalid encrypted payload format');
+    }
+
+    if (!envelope.iv || !envelope.salt || !envelope.data) {
+      throw new BadRequestException('Missing iv, salt, or data in encrypted payload');
+    }
+
+    // Derive AES key from shared secret + salt via PBKDF2
+    const iv = Buffer.from(envelope.iv, 'base64');
+    const salt = Buffer.from(envelope.salt, 'base64');
+    const encryptedData = Buffer.from(envelope.data, 'base64');
+
+    const key = crypto.pbkdf2Sync(encryptionKey, salt, 100000, 32, 'sha256');
+
+    let decrypted: string;
+    try {
+      const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv);
+      // The last 16 bytes are the GCM auth tag
+      const authTag = encryptedData.subarray(encryptedData.length - 16);
+      const actualCiphertext = encryptedData.subarray(0, encryptedData.length - 16);
+      decipher.setAuthTag(authTag);
+      decrypted = Buffer.concat([
+        decipher.update(actualCiphertext),
+        decipher.final(),
+      ]).toString('utf-8');
+    } catch {
+      throw new BadRequestException('Decryption failed — file may be corrupted or tampered with');
+    }
+
+    // Parse and verify the backup data
+    let backup: {
+      attemptId: string;
+      examId: string;
+      studentId: string;
+      answers: any[];
+      texts: Record<string, string>;
+      checksum: string;
+    };
+    try {
+      backup = JSON.parse(decrypted);
+    } catch {
+      throw new BadRequestException('Decrypted data is not valid JSON');
+    }
+
+    // Verify checksum
+    const answersTextsStr = JSON.stringify({ answers: backup.answers, texts: backup.texts });
+    const expectedChecksum = crypto.createHash('sha256').update(answersTextsStr).digest('hex');
+    if (expectedChecksum !== backup.checksum) {
+      throw new BadRequestException('Checksum verification failed — data has been tampered with');
+    }
+
+    // Verify exam matches
+    if (backup.examId !== dto.examId) {
+      throw new BadRequestException('Backup file does not belong to the selected exam');
+    }
+
+    // Find the attempt
+    const attempt = await this.prisma.db.examAttempt.findFirst({
+      where: {
+        id: backup.attemptId,
+        examId: dto.examId,
+        studentId: backup.studentId,
+      },
+      include: { exam: true, student: true },
+    });
+    if (!attempt) {
+      throw new NotFoundException('Matching attempt not found for this exam and student');
+    }
+    if (attempt.status !== 'IN_PROGRESS') {
+      throw new BadRequestException(`Attempt is already ${attempt.status} — cannot import`);
+    }
+
+    // Build answer payload and submit using existing grading logic
+    const submitAnswers = backup.answers.map((a: any) => ({
+      questionId: a.questionId,
+      selectedOptions: a.selectedOptions ?? [],
+      essayText: a.essayText ?? backup.texts?.[a.questionId] ?? undefined,
+    }));
+
+    const result = await this.submitAttempt(attempt.id, { answers: submitAnswers });
+
+    return {
+      success: true,
+      studentName: attempt.student
+        ? `${attempt.student.firstName} ${attempt.student.lastName}`
+        : 'Unknown',
+      score: result.score,
+      attemptId: attempt.id,
+    };
   }
 }

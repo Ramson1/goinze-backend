@@ -20,6 +20,8 @@ import {
   UpdateExamStatusDto,
   RedeemCodeDto,
   BulkCreateQuestionsDto,
+  AutoSaveAttemptDto,
+  ImportEncryptedBackupDto,
 } from './dto/cbt.dto';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
@@ -151,5 +153,20 @@ export class CbtController {
     @Body() dto: SubmitAttemptDto,
   ) {
     return this.cbtService.submitAttempt(id, dto);
+  }
+
+  @Patch('attempts/:id/auto-save')
+  @Roles('STUDENT', 'SCHOOL_ADMIN')
+  autoSaveAttempt(
+    @Param('id') id: string,
+    @Body() dto: AutoSaveAttemptDto,
+  ) {
+    return this.cbtService.autoSaveAttempt(id, dto);
+  }
+
+  @Post('import-backup')
+  @Roles('SCHOOL_ADMIN')
+  importBackup(@Body() dto: ImportEncryptedBackupDto) {
+    return this.cbtService.importEncryptedBackup(dto);
   }
 }
