@@ -434,7 +434,7 @@ export class AdmissionsService {
       );
     }
 
-    return this.prisma.db.$transaction(async (tx) => {
+    const admitted = await this.prisma.db.$transaction(async (tx) => {
       await tx.student.update({
         where: { id: application.studentId! },
         data: { status: 'ACTIVE', matricActivatedAt: new Date() },
@@ -445,6 +445,17 @@ export class AdmissionsService {
         include: { student: true },
       });
     });
+
+    // Notify the student that their admission is now confirmed. Sent AFTER the
+    // transaction commits and non-blocking, so email issues never fail admission.
+    await this.sendAdmissionConfirmedEmail(admitted).catch((err) =>
+      this.logger.error(
+        'Failed to send admission-confirmed email',
+        err instanceof Error ? err.stack : '',
+      ),
+    );
+
+    return admitted;
   }
 
   /**
@@ -597,7 +608,94 @@ export class AdmissionsService {
       });
     }
 
+    // Email the new temporary password to the student (non-blocking).
+    await this.sendStudentPasswordEmail(application, tempPassword).catch((err) =>
+      this.logger.error(
+        'Failed to send student password email',
+        err instanceof Error ? err.stack : '',
+      ),
+    );
+
     return { tempPassword, studentId: application.studentId };
+  }
+
+  /**
+   * Email a student their newly generated portal password (admin-initiated).
+   */
+  private async sendStudentPasswordEmail(
+    application: {
+      schoolId: string;
+      firstName: string;
+      lastName: string;
+      email: string;
+      student?: { email?: string | null; matricNumber?: string | null } | null;
+    },
+    tempPassword: string,
+  ) {
+    const studentEmail = application.student?.email || application.email;
+    if (!studentEmail) return;
+
+    const school = await this.prisma.db.school.findUnique({ where: { id: application.schoolId } });
+    const portalUrl =
+      this.config.get<string>('STUDENT_PORTAL_URL') ||
+      'https://student-mnx7td3pg-black-box-tech-s-projects.vercel.app';
+
+    let schoolLogoUrl = school?.logoUrl || '';
+    if (
+      !schoolLogoUrl ||
+      (!schoolLogoUrl.startsWith('http://') &&
+        !schoolLogoUrl.startsWith('https://') &&
+        !schoolLogoUrl.startsWith('data:'))
+    ) {
+      schoolLogoUrl = 'https://res.cloudinary.com/dq7vegvkk/image/upload/v1786631436/logo_phczed.png';
+    }
+
+    const schoolName = school?.name ?? 'Goinze International School';
+    const studentName = [application.firstName, application.lastName].filter(Boolean).join(' ');
+    const matricNumber = application.student?.matricNumber ?? 'Pending';
+
+    const html = this.renderPasswordEmailHtml({
+      schoolName,
+      schoolLogoUrl,
+      studentName,
+      matricNumber,
+      tempPassword,
+      portalUrl,
+    });
+
+    await this.mail.sendEmail(studentEmail, `Your Portal Password — ${schoolName}`, html);
+  }
+
+  private renderPasswordEmailHtml(d: {
+    schoolName: string;
+    schoolLogoUrl: string;
+    studentName: string;
+    matricNumber: string;
+    tempPassword: string;
+    portalUrl: string;
+  }): string {
+    const logoFallback = 'https://goinzeschool.vercel.app/logo.png';
+    const logoBlock = `<img src="${d.schoolLogoUrl || logoFallback}" alt="${d.schoolName}" style="max-height:60px;margin:0 auto 16px;display:block;" />`;
+    return `<!doctype html><html><head><meta charset="utf-8"></head>
+<body style="font-family:Arial,sans-serif;background:#f8fafc;margin:0;padding:32px;">
+  <div style="max-width:600px;margin:0 auto;background:#fff;border-radius:12px;padding:40px;border:1px solid #e2e8f0;">
+    <div style="text-align:center;margin-bottom:24px;">${logoBlock}
+      <h1 style="color:#0f766e;margin:0;font-size:22px;">${d.schoolName}</h1>
+    </div>
+    <p>Dear <strong>${d.studentName}</strong>,</p>
+    <p>Your student portal password has been created. Use the details below to log in to <strong>${d.schoolName}</strong>.</p>
+    <table style="width:100%;border-collapse:collapse;margin:20px 0;font-size:14px;">
+      <tr><td style="padding:8px 10px;border:1px solid #e2e8f0;background:#f0fdfa;font-weight:bold;color:#0f766e;width:38%;">Matric Number</td><td style="padding:8px 10px;border:1px solid #e2e8f0;">${d.matricNumber}</td></tr>
+      <tr><td style="padding:8px 10px;border:1px solid #e2e8f0;background:#f0fdfa;font-weight:bold;color:#0f766e;">Temporary Password</td><td style="padding:8px 10px;border:1px solid #e2e8f0;">${d.tempPassword}</td></tr>
+    </table>
+    <div style="text-align:center;margin:24px 0;">
+      <a href="${d.portalUrl}" target="_blank" style="display:inline-block;background:#0f766e;color:#fff;padding:12px 32px;border-radius:8px;text-decoration:none;font-weight:bold;">Log in to Student Portal</a>
+    </div>
+    <p style="font-size:13px;color:#64748b;">For your security, please change your password immediately after your first login.</p>
+    <hr style="border:none;border-top:1px solid #e2e8f0;margin:32px 0;" />
+    <p style="font-size:12px;color:#94a3b8;text-align:center;">This is a system-generated email from ${d.schoolName}. Please do not reply to this email.</p>
+  </div>
+</body></html>`;
   }
 
   async updateVerification(id: string, dto: import('./dto/admission.dto').UpdateVerificationDto) {
@@ -766,6 +864,101 @@ export class AdmissionsService {
       <a href="${d.portalUrl}" target="_blank" style="display:inline-block;background:#f0fdfa;color:#0f766e;padding:10px 24px;border-radius:8px;text-decoration:none;font-weight:bold;border:1px solid #99f6e4;">Go to Student Portal</a>
     </div>
     <p style="font-size:13px;color:#64748b;">You will need your matric number (<strong>${d.matricNumber}</strong>)${d.tempPassword ? ` and temporary password (<strong>${d.tempPassword}</strong>)` : ' and the temporary password provided by the admissions office'} to log in.</p>
+    <hr style="border:none;border-top:1px solid #e2e8f0;margin:32px 0;" />
+    <p style="font-size:12px;color:#94a3b8;text-align:center;">This is a system-generated email from ${d.schoolName}. Please do not reply to this email.</p>
+  </div>
+</body></html>`;
+  }
+
+  /**
+   * Send a branded "admission confirmed" email once the acceptance fee is paid
+   * and the student is fully admitted. Called after the admit() transaction commits.
+   */
+  private async sendAdmissionConfirmedEmail(application: {
+    schoolId: string;
+    firstName: string;
+    middleName?: string | null;
+    lastName: string;
+    programmeId?: string | null;
+    departmentId?: string | null;
+    student?: { email?: string | null; matricNumber?: string | null } | null;
+  }) {
+    const studentEmail = application.student?.email;
+    if (!studentEmail) return;
+
+    const [school, programme, department] = await Promise.all([
+      this.prisma.db.school.findUnique({ where: { id: application.schoolId } }),
+      application.programmeId
+        ? this.prisma.db.programme.findUnique({ where: { id: application.programmeId } })
+        : Promise.resolve(null),
+      application.departmentId
+        ? this.prisma.db.department.findUnique({ where: { id: application.departmentId } })
+        : Promise.resolve(null),
+    ]);
+
+    const portalUrl =
+      this.config.get<string>('STUDENT_PORTAL_URL') ||
+      'https://student-mnx7td3pg-black-box-tech-s-projects.vercel.app';
+
+    let schoolLogoUrl = school?.logoUrl || '';
+    if (
+      !schoolLogoUrl ||
+      (!schoolLogoUrl.startsWith('http://') &&
+        !schoolLogoUrl.startsWith('https://') &&
+        !schoolLogoUrl.startsWith('data:'))
+    ) {
+      schoolLogoUrl = 'https://res.cloudinary.com/dq7vegvkk/image/upload/v1786631436/logo_phczed.png';
+    }
+
+    const studentName = [application.firstName, application.middleName, application.lastName]
+      .filter(Boolean)
+      .join(' ');
+
+    const html = this.renderAdmittedEmailHtml({
+      schoolName: school?.name ?? 'Goinze International School',
+      schoolLogoUrl,
+      studentName,
+      matricNumber: application.student?.matricNumber ?? 'Pending',
+      programme: programme?.name ?? '—',
+      department: department?.name ?? '—',
+      portalUrl,
+    });
+
+    await this.mail.sendEmail(
+      studentEmail,
+      `Admission Confirmed — ${school?.name ?? 'Goinze International School'}`,
+      html,
+    );
+  }
+
+  private renderAdmittedEmailHtml(d: {
+    schoolName: string;
+    schoolLogoUrl: string;
+    studentName: string;
+    matricNumber: string;
+    programme: string;
+    department: string;
+    portalUrl: string;
+  }): string {
+    const logoFallback = 'https://goinzeschool.vercel.app/logo.png';
+    const logoBlock = `<img src="${d.schoolLogoUrl || logoFallback}" alt="${d.schoolName}" style="max-height:60px;margin:0 auto 16px;display:block;" />`;
+    return `<!doctype html><html><head><meta charset="utf-8"></head>
+<body style="font-family:Arial,sans-serif;background:#f8fafc;margin:0;padding:32px;">
+  <div style="max-width:600px;margin:0 auto;background:#fff;border-radius:12px;padding:40px;border:1px solid #e2e8f0;">
+    <div style="text-align:center;margin-bottom:24px;">${logoBlock}
+      <h1 style="color:#0f766e;margin:0;font-size:22px;">${d.schoolName}</h1>
+    </div>
+    <p>Dear <strong>${d.studentName}</strong>,</p>
+    <p>Congratulations! Your admission to <strong>${d.schoolName}</strong> is now <strong>confirmed</strong>. Your acceptance fee has been received and your matriculation has been activated.</p>
+    <table style="width:100%;border-collapse:collapse;margin:20px 0;font-size:14px;">
+      <tr><td style="padding:8px 10px;border:1px solid #e2e8f0;background:#f0fdfa;font-weight:bold;color:#0f766e;width:38%;">Matric Number</td><td style="padding:8px 10px;border:1px solid #e2e8f0;">${d.matricNumber}</td></tr>
+      <tr><td style="padding:8px 10px;border:1px solid #e2e8f0;background:#f0fdfa;font-weight:bold;color:#0f766e;">Programme</td><td style="padding:8px 10px;border:1px solid #e2e8f0;">${d.programme}</td></tr>
+      <tr><td style="padding:8px 10px;border:1px solid #e2e8f0;background:#f0fdfa;font-weight:bold;color:#0f766e;">Department</td><td style="padding:8px 10px;border:1px solid #e2e8f0;">${d.department}</td></tr>
+    </table>
+    <div style="text-align:center;margin:24px 0;">
+      <a href="${d.portalUrl}" target="_blank" style="display:inline-block;background:#0f766e;color:#fff;padding:12px 32px;border-radius:8px;text-decoration:none;font-weight:bold;">Go to Student Portal</a>
+    </div>
+    <p style="font-size:13px;color:#64748b;">You can now log in to the student portal with your matric number to complete your registration, view your results, and access school services.</p>
     <hr style="border:none;border-top:1px solid #e2e8f0;margin:32px 0;" />
     <p style="font-size:12px;color:#94a3b8;text-align:center;">This is a system-generated email from ${d.schoolName}. Please do not reply to this email.</p>
   </div>

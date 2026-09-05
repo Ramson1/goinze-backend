@@ -1,4 +1,5 @@
-import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import type { Paginated } from '../lib/types';
 import { PrismaService } from '../prisma/prisma.service';
 import { paginated } from '../common/utils/pagination.util';
@@ -8,11 +9,18 @@ import {
   UpdateStudentDto,
   ImportStudentsDto,
 } from './dto/student.dto';
+import { MailService } from '../mail/mail.service';
 import * as bcrypt from 'bcryptjs';
 
 @Injectable()
 export class StudentsService {
-  constructor(private readonly prisma: PrismaService) {}
+  private readonly logger = new Logger(StudentsService.name);
+
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly mail: MailService,
+    private readonly config: ConfigService,
+  ) {}
 
   async findAll(
     schoolId: string | null,
@@ -64,7 +72,7 @@ export class StudentsService {
   }
 
   async create(schoolId: string | null, dto: CreateStudentDto) {
-    return this.prisma.db.student.create({
+    const student = await this.prisma.db.student.create({
       data: {
         schoolId: schoolId ?? '',
         firstName: dto.firstName,
@@ -86,6 +94,17 @@ export class StudentsService {
         passportUrl: dto.passportUrl,
       },
     });
+
+    // Welcome notification to the newly registered student (non-blocking so
+    // email delivery issues never fail the registration).
+    this.sendStudentWelcomeEmail(student, schoolId).catch((err) =>
+      this.logger.error(
+        'Failed to send student welcome email',
+        err instanceof Error ? err.stack : '',
+      ),
+    );
+
+    return student;
   }
 
   async update(id: string, dto: UpdateStudentDto) {
@@ -395,6 +414,158 @@ export class StudentsService {
       });
     }
 
+    // Email the new temporary password to the student (non-blocking).
+    this.sendPasswordResetEmail(student, tempPassword).catch((err) =>
+      this.logger.error(
+        'Failed to send password reset email',
+        err instanceof Error ? err.stack : '',
+      ),
+    );
+
     return { tempPassword };
+  }
+
+  // ---- email helpers ----
+
+  /** Resolve school branding + portal URL used in student notification emails. */
+  private async resolveSchoolBranding(schoolId: string | null) {
+    const school = schoolId
+      ? await this.prisma.db.school.findUnique({ where: { id: schoolId } })
+      : null;
+    const portalUrl =
+      this.config.get<string>('STUDENT_PORTAL_URL') ||
+      'https://student-mnx7td3pg-black-box-tech-s-projects.vercel.app';
+    let schoolLogoUrl = school?.logoUrl || '';
+    if (
+      !schoolLogoUrl ||
+      (!schoolLogoUrl.startsWith('http://') &&
+        !schoolLogoUrl.startsWith('https://') &&
+        !schoolLogoUrl.startsWith('data:'))
+    ) {
+      schoolLogoUrl = 'https://res.cloudinary.com/dq7vegvkk/image/upload/v1786631436/logo_phczed.png';
+    }
+    return {
+      schoolName: school?.name ?? 'Goinze International School',
+      schoolLogoUrl,
+      portalUrl,
+    };
+  }
+
+  /** Email a newly created student a registration/welcome confirmation. */
+  private async sendStudentWelcomeEmail(
+    student: {
+      email?: string | null;
+      firstName?: string | null;
+      lastName?: string | null;
+      matricNumber?: string | null;
+      regNumber?: string | null;
+      schoolId?: string | null;
+    },
+    schoolId: string | null,
+  ) {
+    if (!student.email) return;
+    const { schoolName, schoolLogoUrl, portalUrl } = await this.resolveSchoolBranding(
+      schoolId ?? student.schoolId ?? null,
+    );
+    const studentName =
+      [student.firstName, student.lastName].filter(Boolean).join(' ') || 'Student';
+    const rows: [string, string][] = [];
+    if (student.matricNumber) rows.push(['Matric Number', student.matricNumber]);
+    if (student.regNumber) rows.push(['Registration Number', student.regNumber]);
+    const html = this.renderBrandedEmailHtml({
+      schoolName,
+      schoolLogoUrl,
+      portalUrl,
+      greeting: studentName,
+      intro: `Welcome to <strong>${schoolName}</strong>! Your student registration has been received and your record has been created in our system.`,
+      rows,
+      ctaLabel: 'Go to Student Portal',
+      footnote:
+        'Please keep your details safe. You will receive your portal login credentials from the admissions office.',
+    });
+    await this.mail.sendEmail(
+      student.email,
+      `Welcome to ${schoolName} — Registration Confirmed`,
+      html,
+    );
+  }
+
+  /** Email a student their new temporary password after an admin-initiated reset. */
+  private async sendPasswordResetEmail(
+    student: {
+      email?: string | null;
+      firstName?: string | null;
+      lastName?: string | null;
+      matricNumber?: string | null;
+      schoolId?: string | null;
+    },
+    tempPassword: string,
+  ) {
+    if (!student.email) return;
+    const { schoolName, schoolLogoUrl, portalUrl } = await this.resolveSchoolBranding(
+      student.schoolId ?? null,
+    );
+    const studentName =
+      [student.firstName, student.lastName].filter(Boolean).join(' ') || 'Student';
+    const rows: [string, string][] = [];
+    if (student.matricNumber) rows.push(['Matric Number', student.matricNumber]);
+    rows.push(['Temporary Password', tempPassword]);
+    const html = this.renderBrandedEmailHtml({
+      schoolName,
+      schoolLogoUrl,
+      portalUrl,
+      greeting: studentName,
+      intro: `Your student portal password has been reset. Use the temporary password below to log in to <strong>${schoolName}</strong>.`,
+      rows,
+      ctaLabel: 'Log in to Student Portal',
+      footnote:
+        'For your security, please change your password immediately after your first login.',
+    });
+    await this.mail.sendEmail(
+      student.email,
+      `Your New Portal Password — ${schoolName}`,
+      html,
+    );
+  }
+
+  /** Render a simple school-branded HTML email shared by student notifications. */
+  private renderBrandedEmailHtml(d: {
+    schoolName: string;
+    schoolLogoUrl: string;
+    portalUrl: string;
+    greeting: string;
+    intro: string;
+    rows: [string, string][];
+    ctaLabel: string;
+    footnote: string;
+  }): string {
+    const logoFallback = 'https://goinzeschool.vercel.app/logo.png';
+    const logoBlock = `<img src="${d.schoolLogoUrl || logoFallback}" alt="${d.schoolName}" style="max-height:60px;margin:0 auto 16px;display:block;" />`;
+    const rowsHtml = d.rows
+      .map(
+        ([k, v]) =>
+          `<tr><td style="padding:8px 10px;border:1px solid #e2e8f0;background:#f0fdfa;font-weight:bold;color:#0f766e;width:38%;">${k}</td><td style="padding:8px 10px;border:1px solid #e2e8f0;">${v}</td></tr>`,
+      )
+      .join('');
+    const tableHtml = rowsHtml
+      ? `<table style="width:100%;border-collapse:collapse;margin:20px 0;font-size:14px;">${rowsHtml}</table>`
+      : '';
+    return `<!doctype html><html><head><meta charset="utf-8"></head>
+<body style="font-family:Arial,sans-serif;background:#f8fafc;margin:0;padding:32px;">
+  <div style="max-width:600px;margin:0 auto;background:#fff;border-radius:12px;padding:40px;border:1px solid #e2e8f0;">
+    <div style="text-align:center;margin-bottom:24px;">${logoBlock}
+      <h1 style="color:#0f766e;margin:0;font-size:22px;">${d.schoolName}</h1>
+    </div>
+    <p>Dear <strong>${d.greeting}</strong>,</p>
+    <p>${d.intro}</p>
+    ${tableHtml}
+    <div style="text-align:center;margin:24px 0;">
+      <a href="${d.portalUrl}" target="_blank" style="display:inline-block;background:#0f766e;color:#fff;padding:12px 32px;border-radius:8px;text-decoration:none;font-weight:bold;">${d.ctaLabel}</a>
+    </div>
+    <p style="font-size:13px;color:#64748b;">${d.footnote}</p>
+    <hr style="border:none;border-top:1px solid #e2e8f0;margin:32px 0;" />
+    <p style="font-size:12px;color:#94a3b8;text-align:center;">This is a system-generated email from ${d.schoolName}. Please do not reply to this email.</p>
+  </div>
+</body></html>`;
   }
 }
