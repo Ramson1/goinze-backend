@@ -11,7 +11,7 @@ export class ContactService {
   ) {}
 
   async sendMessage(dto: ContactMessageDto) {
-    const recipientEmail = this.config.get<string>('CONTACT_RECIPIENT_EMAIL') || 'gonzenicmhst@gmail.com';
+    const recipientEmail = this.config.get<string>('CONTACT_RECIPIENT_EMAIL') || 'ishayadan5@gmail.com';
     const fromName = this.config.get<string>('SMTP_FROM_NAME') || 'Goinze International School';
     const fromEmail = this.config.get<string>('RESEND_FROM_EMAIL') || 'noreply@goinze.com';
 
