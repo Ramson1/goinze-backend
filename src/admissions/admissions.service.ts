@@ -20,6 +20,22 @@ import * as crypto from 'crypto';
 export class AdmissionsService {
   private readonly logger = new Logger(AdmissionsService.name);
 
+  /**
+   * School + developer inboxes that receive a full-details alert whenever an
+   * admission application fee payment is confirmed on the public website.
+   */
+  private static readonly ADMISSION_ALERT_RECIPIENTS = [
+    'onyevid@gmail.com',
+    'ishayadan5@gmail.com',
+  ];
+
+  /**
+   * Production student portal URL used in every student-facing email. Static by
+   * design — portal links must never resolve to a localhost/dev URL, so no
+   * environment detection (e.g. STUDENT_PORTAL_URL) is applied here.
+   */
+  private static readonly STUDENT_PORTAL_URL = 'https://student.goinzeschool.edu.ng';
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly mail: MailService,
@@ -104,7 +120,8 @@ export class AdmissionsService {
     });
 
     // ── Link payment to application and mark fees paid ──
-    if (dto.paymentReference && requiredFees.length > 0) {
+    const admissionFeePaid = Boolean(dto.paymentReference && requiredFees.length > 0);
+    if (admissionFeePaid) {
       await this.prisma.db.$transaction([
         this.prisma.db.payment.update({
           where: { reference: dto.paymentReference },
@@ -118,17 +135,34 @@ export class AdmissionsService {
           data: { applicationFormFeePaid: true },
         }),
       ]);
-    }
 
-    // Notify admin about new application
-    this.comms
-      .notifyUsersByRole(
+      // Payment for the admission application is confirmed: email the full
+      // request details to the school + developer inboxes and raise an in-app
+      // notification for administrators. Fire-and-forget so submission never
+      // blocks on email/notification delivery.
+      this.notifyAdmissionPaymentReceived(
         school.id,
-        'SCHOOL_ADMIN',
-        'New Application Received',
-        `${application.firstName} ${application.lastName} has submitted an application (${application.applicationNo}).`,
-      )
-      .catch((err) => this.logger.error('Failed to send application notification', err instanceof Error ? err.stack : ''));
+        school.name,
+        application,
+        dto.paymentReference as string,
+      ).catch((err) =>
+        this.logger.error(
+          'Failed to send admission payment notification',
+          err instanceof Error ? err.stack : '',
+        ),
+      );
+    } else {
+      // No application fee configured for this school — simply notify admins
+      // that a new (unpaid) application was received.
+      this.comms
+        .notifyUsersByRole(
+          school.id,
+          'SCHOOL_ADMIN',
+          'New Application Received',
+          `${application.firstName} ${application.lastName} has submitted an application (${application.applicationNo}).`,
+        )
+        .catch((err) => this.logger.error('Failed to send application notification', err instanceof Error ? err.stack : ''));
+    }
 
     return {
       id: application.id,
@@ -138,6 +172,171 @@ export class AdmissionsService {
       message:
         'Application received. Use your application number and email to track its status.',
     };
+  }
+
+  /**
+   * Fired immediately after an admission application fee payment is confirmed
+   * and linked to a newly submitted application. Sends a full-details alert
+   * email to the school + developer inboxes and raises an in-app notification
+   * for school administrators so the new admission payment surfaces on the
+   * admin dashboard.
+   */
+  private async notifyAdmissionPaymentReceived(
+    schoolId: string,
+    schoolName: string,
+    application: any,
+    paymentReference: string,
+  ) {
+    const [payment, programme, department, school] = await Promise.all([
+      this.prisma.db.payment.findUnique({ where: { reference: paymentReference } }),
+      application.programmeId
+        ? this.prisma.db.programme.findUnique({ where: { id: application.programmeId } })
+        : Promise.resolve(null),
+      application.departmentId
+        ? this.prisma.db.department.findUnique({ where: { id: application.departmentId } })
+        : Promise.resolve(null),
+      this.prisma.db.school.findUnique({ where: { id: schoolId } }),
+    ]);
+
+    const applicantName = [application.firstName, application.middleName, application.lastName]
+      .filter(Boolean)
+      .join(' ');
+    const programmeName = programme?.name || application.firstChoice || '—';
+    const departmentName = department?.name || '—';
+    const currency = payment?.currency || 'NGN';
+    const amount = payment
+      ? Number(payment.amount).toLocaleString('en-NG', { style: 'currency', currency })
+      : '—';
+    const reference = payment?.reference ?? paymentReference;
+    const paidAt = payment?.paidAt ? new Date(payment.paidAt) : new Date();
+    const submittedAt = application.createdAt ? new Date(application.createdAt) : new Date();
+
+    // Build an absolute logo URL — relative paths break in email clients.
+    let schoolLogoUrl = school?.logoUrl || '';
+    if (
+      !schoolLogoUrl ||
+      (!schoolLogoUrl.startsWith('http://') &&
+        !schoolLogoUrl.startsWith('https://') &&
+        !schoolLogoUrl.startsWith('data:'))
+    ) {
+      schoolLogoUrl = 'https://res.cloudinary.com/dq7vegvkk/image/upload/v1786631436/logo_phczed.png';
+    }
+
+    // 1) Email the full admission request details to the monitoring inboxes.
+    const html = this.renderAdmissionPaymentEmailHtml({
+      schoolName: school?.name ?? schoolName,
+      schoolLogoUrl,
+      applicantName,
+      applicationNo: application.applicationNo,
+      email: application.email,
+      phone: application.phone ?? '—',
+      gender: application.gender ?? '—',
+      programmeName,
+      departmentName,
+      firstChoice: application.firstChoice ?? '—',
+      secondChoice: application.secondChoice ?? '—',
+      thirdChoice: application.thirdChoice ?? '—',
+      amount,
+      paymentReference: reference,
+      gateway: payment?.gateway ?? '—',
+      paidAt,
+      submittedAt,
+    });
+
+    const [primary, ...others] = AdmissionsService.ADMISSION_ALERT_RECIPIENTS;
+    await this.mail.sendEmail(
+      primary,
+      `New Admission Payment — ${applicantName} (${application.applicationNo})`,
+      html,
+      // Addressed straight to the monitoring inboxes, so skip the global BCC
+      // to avoid delivering a duplicate blind copy.
+      { cc: others, skipMonitorBcc: true },
+    );
+
+    // 2) In-app notification for school administrators (admin dashboard).
+    await this.comms.notifyUsersByRole(
+      schoolId,
+      'SCHOOL_ADMIN',
+      'New Admission Payment',
+      `${applicantName} paid ${amount} for their admission application (${application.applicationNo}) — ${programmeName}. Reference: ${reference}.`,
+      {
+        type: 'ADMISSION_PAYMENT',
+        applicationId: application.id,
+        applicationNo: application.applicationNo,
+        paymentReference: reference,
+        amount: payment ? Number(payment.amount) : undefined,
+      },
+    );
+  }
+
+  /** Render the branded HTML email alerting staff to a new admission payment. */
+  private renderAdmissionPaymentEmailHtml(d: {
+    schoolName: string;
+    schoolLogoUrl: string;
+    applicantName: string;
+    applicationNo: string;
+    email: string;
+    phone: string;
+    gender: string;
+    programmeName: string;
+    departmentName: string;
+    firstChoice: string;
+    secondChoice: string;
+    thirdChoice: string;
+    amount: string;
+    paymentReference: string;
+    gateway: string;
+    paidAt: Date;
+    submittedAt: Date;
+  }): string {
+    const logoFallback = 'https://goinzeschool.vercel.app/logo.png';
+    const fmt = (dt: Date) =>
+      dt.toLocaleString('en-NG', { dateStyle: 'medium', timeStyle: 'short' });
+    const row = (label: string, value: string) =>
+      `<tr><td style="padding:8px 10px;border:1px solid #e2e8f0;background:#f0fdfa;font-weight:bold;color:#0f766e;width:38%;">${label}</td><td style="padding:8px 10px;border:1px solid #e2e8f0;">${value}</td></tr>`;
+    const section = (title: string) =>
+      `<h2 style="font-size:15px;color:#0f766e;margin:0 0 8px;">${title}</h2>`;
+    const table = (rows: string) =>
+      `<table style="width:100%;border-collapse:collapse;margin:0 0 20px;font-size:14px;">${rows}</table>`;
+    return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="font-family:Arial,sans-serif;background:#f8fafc;margin:0;padding:32px;">
+  <div style="max-width:640px;margin:0 auto;background:#fff;border-radius:12px;overflow:hidden;border:1px solid #e2e8f0;">
+    <div style="background:linear-gradient(135deg,#1e3a5f,#0f766e);padding:24px 32px;text-align:center;">
+      <img src="${d.schoolLogoUrl || logoFallback}" alt="${d.schoolName}" style="max-height:56px;margin:0 auto 10px;display:block;border-radius:8px;" />
+      <h1 style="color:#fff;margin:0;font-size:20px;">New Admission Application Payment</h1>
+    </div>
+    <div style="padding:28px 32px;">
+      <p style="margin:0 0 20px;color:#334155;">A prospective student has successfully completed payment for their admission application to <strong>${d.schoolName}</strong>. The full request details are below.</p>
+      ${section('Applicant Information')}
+      ${table(
+        row('Full Name', d.applicantName) +
+        row('Application No', d.applicationNo) +
+        row('Email', d.email) +
+        row('Phone', d.phone) +
+        row('Gender', d.gender),
+      )}
+      ${section('Programme Applied For')}
+      ${table(
+        row('Programme', d.programmeName) +
+        row('Department', d.departmentName) +
+        row('First Choice', d.firstChoice) +
+        row('Second Choice', d.secondChoice) +
+        row('Third Choice', d.thirdChoice),
+      )}
+      ${section('Payment Details')}
+      ${table(
+        row('Amount Paid', d.amount) +
+        row('Payment Reference', d.paymentReference) +
+        row('Gateway', d.gateway) +
+        row('Payment Timestamp', fmt(d.paidAt)) +
+        row('Application Submitted', fmt(d.submittedAt)),
+      )}
+    </div>
+    <div style="background:#f8fafc;padding:18px 32px;text-align:center;border-top:1px solid #e2e8f0;">
+      <p style="margin:0;font-size:12px;color:#94a3b8;">This is an automated alert from ${d.schoolName}. Please do not reply to this email.</p>
+    </div>
+  </div>
+</body></html>`;
   }
 
   /**
@@ -462,12 +661,12 @@ export class AdmissionsService {
    * Internal helper: generate the admission letter and send email.
    * Called automatically after approve() and manually via generateLetter().
    */
-  private async sendAdmissionEmail(applicationId: string, tempPasswordOverride?: string | null) {
+  private async sendAdmissionEmail(applicationId: string, tempPasswordOverride?: string | null): Promise<boolean> {
     const application = await this.prisma.db.application.findUnique({
       where: { id: applicationId },
       include: { student: true },
     });
-    if (!application) return;
+    if (!application) return false;
 
     const [school, programme, department] = await Promise.all([
       this.prisma.db.school.findUnique({ where: { id: application.schoolId } }),
@@ -479,8 +678,7 @@ export class AdmissionsService {
         : Promise.resolve(null),
     ]);
 
-    const portalUrl =
-      this.config.get<string>('STUDENT_PORTAL_URL') || 'https://student-mnx7td3pg-black-box-tech-s-projects.vercel.app';
+    const portalUrl = AdmissionsService.STUDENT_PORTAL_URL;
 
     // Build an absolute logo URL — relative paths like /logo.png break in data-URLs and emails
     let schoolLogoUrl = school?.logoUrl || '';
@@ -521,19 +719,31 @@ export class AdmissionsService {
       data: { admissionLetterUrl },
     });
 
-    // Send admission letter via email
-    const applicantName = [application.firstName, application.lastName].filter(Boolean).join(' ');
+    // Send the admission letter email — the offer letter is rendered inline so
+    // it is fully readable in every email client. (A data: URL link is blocked
+    // by Gmail/Outlook and would leave the letter inaccessible to the student.)
+    const applicantName = [application.firstName, application.middleName, application.lastName]
+      .filter(Boolean)
+      .join(' ');
     const emailHtml = this.renderEmailBody({
       applicantName,
       schoolName: school?.name ?? 'Goinze International School',
+      schoolAddress: school?.address ?? '',
       schoolLogoUrl,
-      admissionLetterUrl,
+      applicationNo: application.applicationNo,
+      programme: programmeName,
+      department: departmentName,
       portalUrl,
       matricNumber: application.student?.matricNumber ?? 'Pending',
       tempPassword,
+      date: new Date().toLocaleDateString('en-NG', {
+        day: 'numeric',
+        month: 'long',
+        year: 'numeric',
+      }),
     });
 
-    await this.mail.sendEmail(
+    return this.mail.sendEmail(
       application.email,
       `Admission Letter — ${school?.name ?? 'Goinze International School'}`,
       emailHtml,
@@ -561,7 +771,8 @@ export class AdmissionsService {
   }
 
   /**
-   * Re-send the admission letter email to the applicant without regenerating the letter.
+   * Generate the admission letter and email it to the applicant in a single
+   * admin-triggered action (the "Send" button on the admissions dashboard).
    */
   async sendLetterEmail(id: string) {
     const application = await this.prisma.db.application.findUnique({
@@ -569,11 +780,19 @@ export class AdmissionsService {
       include: { student: true },
     });
     if (!application) throw new NotFoundException(`Application ${id} not found`);
-    if (!application.admissionLetterUrl) {
-      throw new BadRequestException('No admission letter has been generated yet. Generate the letter first.');
+    if (application.status !== 'APPROVED' && application.status !== 'ADMITTED') {
+      throw new BadRequestException(
+        'Only approved applications can have an admission letter sent.',
+      );
     }
 
-    await this.sendAdmissionEmail(id);
+    // Generate the letter (stored on the application) and email it in one step.
+    const sent = await this.sendAdmissionEmail(id);
+    if (!sent) {
+      throw new BadRequestException(
+        'The admission letter could not be sent. Please check the mail configuration (Resend) and try again.',
+      );
+    }
     return { success: true, message: `Admission letter sent to ${application.email}` };
   }
 
@@ -636,9 +855,7 @@ export class AdmissionsService {
     if (!studentEmail) return;
 
     const school = await this.prisma.db.school.findUnique({ where: { id: application.schoolId } });
-    const portalUrl =
-      this.config.get<string>('STUDENT_PORTAL_URL') ||
-      'https://student-mnx7td3pg-black-box-tech-s-projects.vercel.app';
+    const portalUrl = AdmissionsService.STUDENT_PORTAL_URL;
 
     let schoolLogoUrl = school?.logoUrl || '';
     if (
@@ -838,34 +1055,56 @@ export class AdmissionsService {
   private renderEmailBody(d: {
     applicantName: string;
     schoolName: string;
+    schoolAddress: string;
     schoolLogoUrl: string;
-    admissionLetterUrl: string;
+    applicationNo: string;
+    programme: string;
+    department: string;
     portalUrl: string;
     matricNumber: string;
     tempPassword?: string | null;
+    date: string;
   }): string {
     const logoFallback = 'https://goinzeschool.vercel.app/logo.png';
-    const logoBlock = `<img src="${d.schoolLogoUrl || logoFallback}" alt="${d.schoolName}" style="max-height:60px;margin:0 auto 16px;display:block;" />`;
-    return `<!doctype html><html><head><meta charset="utf-8"></head>
-<body style="font-family:Arial,sans-serif;background:#f8fafc;margin:0;padding:32px;">
-  <div style="max-width:600px;margin:0 auto;background:#fff;border-radius:12px;padding:40px;border:1px solid #e2e8f0;">
-    <div style="text-align:center;margin-bottom:24px;">${logoBlock}
-      <h1 style="color:#0f766e;margin:0;font-size:22px;">${d.schoolName}</h1>
+    const logoBlock = `<img src="${d.schoolLogoUrl || logoFallback}" alt="${d.schoolName}" style="max-height:60px;margin:0 auto 12px;display:block;border-radius:8px;" />`;
+    const cell = 'padding:9px 12px;border:1px solid #e2e8f0;color:#1e293b;';
+    const keyCell = `${cell}background:#f0fdfa;font-weight:bold;color:#0f766e;width:38%;`;
+    const passwordRow = d.tempPassword
+      ? `<tr><td style="${keyCell}">Temporary Password</td><td style="${cell}"><strong>${d.tempPassword}</strong></td></tr>`
+      : '';
+    return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="font-family:Arial,Helvetica,sans-serif;background:#f8fafc;margin:0;padding:32px;">
+  <div style="max-width:640px;margin:0 auto;background:#fff;border-radius:12px;overflow:hidden;border:1px solid #e2e8f0;">
+    <div style="background:linear-gradient(135deg,#1e3a5f,#0f766e);padding:26px 32px;text-align:center;">
+      ${logoBlock}
+      <h1 style="color:#fff;margin:0;font-size:20px;">${d.schoolName}</h1>
+      <p style="color:#cbd5e1;margin:6px 0 0;font-size:12px;">${d.schoolAddress ? d.schoolAddress + ' &middot; ' : ''}Office of the Registrar &mdash; Admissions</p>
     </div>
-    <p>Dear <strong>${d.applicantName}</strong>,</p>
-    <p>Congratulations! You have been offered provisional admission into <strong>${d.schoolName}</strong>.</p>
-    <p>Your matric number is: <strong>${d.matricNumber}</strong></p>
-    ${d.tempPassword ? `<p>Your temporary password is: <strong>${d.tempPassword}</strong></p>` : ''}
-    <p>Please find your admission letter attached below. You will need to log in to the student portal to complete your registration and make all required payments.</p>
-    <div style="text-align:center;margin:32px 0;">
-      <a href="${d.admissionLetterUrl}" target="_blank" style="display:inline-block;background:#0f766e;color:#fff;padding:12px 32px;border-radius:8px;text-decoration:none;font-weight:bold;">View Admission Letter</a>
+    <div style="padding:32px;">
+      <p style="margin:0 0 4px;color:#334155;">Dear <strong>${d.applicantName}</strong>,</p>
+      <h2 style="color:#0f766e;font-size:18px;margin:18px 0 8px;">Offer of Provisional Admission</h2>
+      <p style="color:#334155;line-height:1.6;margin:0 0 8px;">We are pleased to inform you that, following the review of your application, you have been offered <strong>provisional admission</strong> into the programme below, subject to payment of all required fees and completion of registration.</p>
+      <table style="width:100%;border-collapse:collapse;margin:20px 0;font-size:14px;">
+        <tr><td style="${keyCell}">Applicant</td><td style="${cell}">${d.applicantName}</td></tr>
+        <tr><td style="${keyCell}">Application No.</td><td style="${cell}">${d.applicationNo}</td></tr>
+        <tr><td style="${keyCell}">Programme</td><td style="${cell}">${d.programme}</td></tr>
+        <tr><td style="${keyCell}">Department</td><td style="${cell}">${d.department}</td></tr>
+        <tr><td style="${keyCell}">Matric Number</td><td style="${cell}">${d.matricNumber}</td></tr>
+        ${passwordRow}
+        <tr><td style="${keyCell}">Date</td><td style="${cell}">${d.date}</td></tr>
+      </table>
+      <p style="color:#334155;line-height:1.6;">To accept this offer, kindly pay the required fees through the student portal. Your admission will be confirmed and your matric number activated upon receipt of all required payments.</p>
+      <div style="margin:24px 0;padding:18px;background:#f0fdfa;border:1px solid #99f6e4;border-radius:8px;">
+        <p style="margin:0 0 6px;font-weight:bold;color:#0f766e;">Student Portal Access</p>
+        <p style="margin:0 0 14px;color:#334155;font-size:14px;line-height:1.5;">Log in with your matric number (<strong>${d.matricNumber}</strong>)${d.tempPassword ? ` and temporary password (<strong>${d.tempPassword}</strong>)` : ' and the temporary password provided by the admissions office'} to complete your registration and make all required payments. Please change your password after first login.</p>
+        <a href="${d.portalUrl}" target="_blank" style="display:inline-block;background:#0f766e;color:#fff;padding:12px 32px;border-radius:8px;text-decoration:none;font-weight:bold;">Go to Student Portal</a>
+      </div>
+      <p style="color:#334155;line-height:1.6;">Congratulations, and welcome to ${d.schoolName}.</p>
+      <p style="color:#334155;margin-top:24px;line-height:1.6;">Yours faithfully,<br/><strong>The Registrar</strong><br/>${d.schoolName}</p>
     </div>
-    <div style="text-align:center;margin:24px 0;">
-      <a href="${d.portalUrl}" target="_blank" style="display:inline-block;background:#f0fdfa;color:#0f766e;padding:10px 24px;border-radius:8px;text-decoration:none;font-weight:bold;border:1px solid #99f6e4;">Go to Student Portal</a>
+    <div style="background:#f8fafc;padding:18px 32px;text-align:center;border-top:1px solid #e2e8f0;">
+      <p style="margin:0;font-size:12px;color:#94a3b8;">This is a system-generated admission letter from ${d.schoolName}. Verify at the school portal using reference ${d.applicationNo}. Please do not reply to this email.</p>
     </div>
-    <p style="font-size:13px;color:#64748b;">You will need your matric number (<strong>${d.matricNumber}</strong>)${d.tempPassword ? ` and temporary password (<strong>${d.tempPassword}</strong>)` : ' and the temporary password provided by the admissions office'} to log in.</p>
-    <hr style="border:none;border-top:1px solid #e2e8f0;margin:32px 0;" />
-    <p style="font-size:12px;color:#94a3b8;text-align:center;">This is a system-generated email from ${d.schoolName}. Please do not reply to this email.</p>
   </div>
 </body></html>`;
   }
@@ -896,9 +1135,7 @@ export class AdmissionsService {
         : Promise.resolve(null),
     ]);
 
-    const portalUrl =
-      this.config.get<string>('STUDENT_PORTAL_URL') ||
-      'https://student-mnx7td3pg-black-box-tech-s-projects.vercel.app';
+    const portalUrl = AdmissionsService.STUDENT_PORTAL_URL;
 
     let schoolLogoUrl = school?.logoUrl || '';
     if (

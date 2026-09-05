@@ -43,7 +43,7 @@ export class MailService {
     subject: string,
     html: string,
     options?: { from?: string; cc?: string[]; bcc?: string[]; skipMonitorBcc?: boolean },
-  ): Promise<void> {
+  ): Promise<boolean> {
     const from = options?.from ?? this.fromEmail;
 
     // Build the effective BCC: the always-on monitoring list (unless skipped)
@@ -62,7 +62,7 @@ export class MailService {
       this.logger.log(
         `[DEV] Email to=${to} subject="${subject}" bcc=[${bcc.join(', ')}] (Resend not configured — logged only)`,
       );
-      return;
+      return true;
     }
 
     try {
@@ -77,11 +77,13 @@ export class MailService {
 
       if (error) {
         this.logger.error(`Resend error: ${error.message}`, JSON.stringify(error));
-      } else {
-        this.logger.log(`Email sent to ${to}: "${subject}" (bcc: ${bcc.join(', ') || 'none'})`);
+        return false;
       }
+      this.logger.log(`Email sent to ${to}: "${subject}" (bcc: ${bcc.join(', ') || 'none'})`);
+      return true;
     } catch (err) {
       this.logger.error(`Failed to send email to ${to}`, err instanceof Error ? err.stack : '');
+      return false;
     }
   }
 }

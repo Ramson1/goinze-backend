@@ -432,9 +432,8 @@ export class StudentsService {
     const school = schoolId
       ? await this.prisma.db.school.findUnique({ where: { id: schoolId } })
       : null;
-    const portalUrl =
-      this.config.get<string>('STUDENT_PORTAL_URL') ||
-      'https://student-mnx7td3pg-black-box-tech-s-projects.vercel.app';
+    // Static production URL — portal links must never resolve to localhost/dev.
+    const portalUrl = 'https://student.goinzeschool.edu.ng';
     let schoolLogoUrl = school?.logoUrl || '';
     if (
       !schoolLogoUrl ||
