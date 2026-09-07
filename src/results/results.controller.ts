@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Param,
   Patch,
@@ -106,6 +107,12 @@ export class ResultsController {
   @Roles('SCHOOL_ADMIN')
   updateScore(@Param('id') id: string, @Body() dto: UpdateScoreDto) {
     return this.resultsService.updateScore(id, dto);
+  }
+
+  @Delete(':id')
+  @Roles('SUPER_ADMIN', 'SCHOOL_ADMIN')
+  deleteResult(@Param('id') id: string, @CurrentUser() user: SessionUser) {
+    return this.resultsService.deleteResult(id, user.schoolId, user.id);
   }
 
   // ---- Result pins ----

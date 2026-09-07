@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CommunicationService } from '../communication/communication.service';
 
@@ -7,6 +7,8 @@ import { CommunicationService } from '../communication/communication.service';
  */
 @Injectable()
 export class AttendanceService {
+  private readonly logger = new Logger(AttendanceService.name);
+
   constructor(private readonly prisma: PrismaService, private readonly comms: CommunicationService) {}
 
   // -----------------------------------------------------------------------
@@ -305,12 +307,27 @@ export class AttendanceService {
       : [];
     const courseMap = new Map(courses.map((c) => [c.id, { code: c.code, title: c.title }]));
 
+    // Fetch lecturer names from course allocations
+    const allocations = courseIds.length > 0
+      ? await this.prisma.db.courseAllocation.findMany({
+          where: { courseId: { in: courseIds } },
+          include: { staff: { select: { firstName: true, lastName: true, title: true } } },
+        })
+      : [];
+    const lecturerMap = new Map<string, string[]>();
+    for (const a of allocations) {
+      const name = [a.staff?.title, a.staff?.firstName, a.staff?.lastName].filter(Boolean).join(' ');
+      if (!lecturerMap.has(a.courseId)) lecturerMap.set(a.courseId, []);
+      lecturerMap.get(a.courseId)!.push(name);
+    }
+
     // Build final array
     const sessions = [...sessionMap.values()]
       .map((s) => ({
         courseId: s.courseId,
         courseCode: courseMap.get(s.courseId)?.code ?? '—',
         courseTitle: courseMap.get(s.courseId)?.title ?? 'Unknown Course',
+        lecturers: lecturerMap.get(s.courseId) ?? [],
         date: s.date,
         totalMarked: s.presentCount + s.absentCount + s.lateCount + s.excusedCount,
         presentCount: s.presentCount,
@@ -381,6 +398,71 @@ export class AttendanceService {
         },
       };
     });
+  }
+
+  // -----------------------------------------------------------------------
+  // Session deletion (SUPER_ADMIN / SCHOOL_ADMIN)
+  // -----------------------------------------------------------------------
+
+  /**
+   * Delete an entire attendance "session" — all records for a course on a given
+   * day. A session is not a single row; it is every AttendanceRecord matching the
+   * (courseId, day-window). School-scoped via the same window filter.
+   */
+  async deleteSession(
+    schoolId: string | null,
+    courseId: string,
+    date: string,
+    actorUserId?: string,
+  ) {
+    const start = new Date(date);
+    if (Number.isNaN(start.getTime())) {
+      throw new BadRequestException('Invalid attendance date');
+    }
+    start.setHours(0, 0, 0, 0);
+    const end = new Date(start);
+    end.setDate(end.getDate() + 1);
+
+    const where = {
+      ...(schoolId ? { schoolId } : {}),
+      courseId,
+      date: { gte: start, lt: end },
+    };
+
+    const existing = await this.prisma.db.attendanceRecord.count({ where });
+    if (existing === 0) {
+      throw new NotFoundException('Attendance session not found');
+    }
+
+    const { count } = await this.prisma.db.attendanceRecord.deleteMany({ where });
+
+    // Audit trail (non-blocking — never fail the delete because logging failed)
+    this.prisma.db.auditLog
+      .create({
+        data: {
+          schoolId: schoolId ?? '',
+          userId: actorUserId ?? null,
+          action: 'ATTENDANCE_SESSION_DELETED',
+          entity: 'AttendanceSession',
+          entityId: `${courseId}:${start.toISOString().slice(0, 10)}`,
+          metadata: {
+            courseId,
+            date: start.toISOString().slice(0, 10),
+            recordsDeleted: count,
+          },
+        },
+      })
+      .catch((err) =>
+        this.logger.warn(
+          'Failed to write audit log for attendance session deletion',
+          err instanceof Error ? err.stack : '',
+        ),
+      );
+
+    this.logger.warn(
+      `Attendance session for course ${courseId} on ${start.toISOString().slice(0, 10)} (${count} records) deleted by user ${actorUserId ?? 'unknown'}`,
+    );
+    return { deleted: count };
   }
 
   // -----------------------------------------------------------------------

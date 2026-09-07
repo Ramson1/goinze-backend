@@ -49,6 +49,49 @@ export class CbtService {
     });
   }
 
+  /**
+   * Delete a question bank and all its questions (cascade).
+   * SUPER_ADMIN / SCHOOL_ADMIN only; school-scoped.
+   */
+  async deleteBank(id: string, schoolId: string | null, actorUserId?: string) {
+    const existing = await this.prisma.db.questionBank.findUnique({
+      where: { id },
+      include: { _count: { select: { questions: true } } },
+    });
+    if (!existing || (schoolId && existing.schoolId !== schoolId)) {
+      throw new NotFoundException('Question bank not found');
+    }
+    const deleted = await this.prisma.db.questionBank.delete({ where: { id } });
+
+    this.prisma.db.auditLog
+      .create({
+        data: {
+          schoolId: existing.schoolId,
+          userId: actorUserId ?? null,
+          action: 'QUESTION_BANK_DELETED',
+          entity: 'QuestionBank',
+          entityId: id,
+          metadata: {
+            title: existing.title,
+            courseId: existing.courseId,
+            category: existing.category,
+            questions: existing._count.questions,
+          },
+        },
+      })
+      .catch((err) =>
+        this.logger.warn(
+          'Failed to write audit log for question bank deletion',
+          err instanceof Error ? err.stack : '',
+        ),
+      );
+
+    this.logger.warn(
+      `Question bank ${existing.title} (${id}) deleted by user ${actorUserId ?? 'unknown'}`,
+    );
+    return deleted;
+  }
+
   // ---- Questions ----
   listQuestions(bankId: string) {
     return this.prisma.db.question.findMany({
@@ -79,6 +122,49 @@ export class CbtService {
       },
       include: { options: true },
     });
+  }
+
+  /**
+   * Delete a single question (cascade removes its options / exam links / answers).
+   * SUPER_ADMIN / SCHOOL_ADMIN only; scoped via the parent bank's school.
+   */
+  async deleteQuestion(id: string, schoolId: string | null, actorUserId?: string) {
+    const existing = await this.prisma.db.question.findUnique({
+      where: { id },
+      include: { bank: true },
+    });
+    if (!existing || (schoolId && existing.bank?.schoolId !== schoolId)) {
+      throw new NotFoundException('Question not found');
+    }
+    const deleted = await this.prisma.db.question.delete({ where: { id } });
+
+    this.prisma.db.auditLog
+      .create({
+        data: {
+          schoolId: existing.bank?.schoolId ?? '',
+          userId: actorUserId ?? null,
+          action: 'QUESTION_DELETED',
+          entity: 'Question',
+          entityId: id,
+          metadata: {
+            bankId: existing.bankId,
+            type: existing.type,
+            text: existing.text,
+            marks: existing.marks,
+          },
+        },
+      })
+      .catch((err) =>
+        this.logger.warn(
+          'Failed to write audit log for question deletion',
+          err instanceof Error ? err.stack : '',
+        ),
+      );
+
+    this.logger.warn(
+      `Question ${id} (bank ${existing.bankId}) deleted by user ${actorUserId ?? 'unknown'}`,
+    );
+    return deleted;
   }
 
   // ---- Exams ----
@@ -151,6 +237,51 @@ export class CbtService {
         questionId: { in: questionIds },
       },
     });
+  }
+
+  /**
+   * Delete an exam and all its questions links, attempts and access codes (cascade).
+   * SUPER_ADMIN / SCHOOL_ADMIN only; school-scoped.
+   */
+  async deleteExam(id: string, schoolId: string | null, actorUserId?: string) {
+    const existing = await this.prisma.db.exam.findUnique({
+      where: { id },
+      include: { _count: { select: { questions: true, attempts: true } } },
+    });
+    if (!existing || (schoolId && existing.schoolId !== schoolId)) {
+      throw new NotFoundException('Exam not found');
+    }
+    const deleted = await this.prisma.db.exam.delete({ where: { id } });
+
+    this.prisma.db.auditLog
+      .create({
+        data: {
+          schoolId: existing.schoolId,
+          userId: actorUserId ?? null,
+          action: 'EXAM_DELETED',
+          entity: 'Exam',
+          entityId: id,
+          metadata: {
+            title: existing.title,
+            courseId: existing.courseId,
+            sessionId: existing.sessionId,
+            status: existing.status,
+            questions: existing._count.questions,
+            attempts: existing._count.attempts,
+          },
+        },
+      })
+      .catch((err) =>
+        this.logger.warn(
+          'Failed to write audit log for exam deletion',
+          err instanceof Error ? err.stack : '',
+        ),
+      );
+
+    this.logger.warn(
+      `Exam ${existing.title} (${id}) deleted by user ${actorUserId ?? 'unknown'}`,
+    );
+    return deleted;
   }
 
   // ---- Attempts ----

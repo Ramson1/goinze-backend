@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, BadRequestException } from '@nestjs/common';
 import { computeGpa, resolveGrade, generateResultPin } from '../lib/utils';
 import type { CourseGrade } from '../lib/utils';
 import { PrismaService } from '../prisma/prisma.service';
@@ -16,6 +16,8 @@ import {
  */
 @Injectable()
 export class ResultsService {
+  private readonly logger = new Logger(ResultsService.name);
+
   constructor(private readonly prisma: PrismaService, private readonly comms: CommunicationService) {}
 
   private computeScore(caScore: number, examScore: number) {
@@ -163,6 +165,50 @@ export class ResultsService {
         publishedAt: null,
       },
     });
+  }
+
+  /**
+   * Delete a single result record (SUPER_ADMIN / SCHOOL_ADMIN only).
+   * School-scoped: a result belonging to another school is treated as not found.
+   */
+  async deleteResult(id: string, schoolId: string | null, actorUserId?: string) {
+    const existing = await this.prisma.db.result.findUnique({ where: { id } });
+    if (!existing || (schoolId && existing.schoolId !== schoolId)) {
+      throw new NotFoundException('Result not found');
+    }
+    const deleted = await this.prisma.db.result.delete({ where: { id } });
+
+    // Audit trail (non-blocking — never fail the delete because logging failed)
+    this.prisma.db.auditLog
+      .create({
+        data: {
+          schoolId: existing.schoolId,
+          userId: actorUserId ?? null,
+          action: 'RESULT_DELETED',
+          entity: 'Result',
+          entityId: id,
+          metadata: {
+            studentId: existing.studentId,
+            courseId: existing.courseId,
+            sessionId: existing.sessionId,
+            semester: existing.semester,
+            totalScore: existing.totalScore.toString(),
+            grade: existing.grade,
+            status: existing.status,
+          },
+        },
+      })
+      .catch((err) =>
+        this.logger.warn(
+          'Failed to write audit log for result deletion',
+          err instanceof Error ? err.stack : '',
+        ),
+      );
+
+    this.logger.warn(
+      `Result ${id} (student ${existing.studentId}, course ${existing.courseId}) deleted by user ${actorUserId ?? 'unknown'}`,
+    );
+    return deleted;
   }
 
   // ---- Admin: course-grouped result approval ----

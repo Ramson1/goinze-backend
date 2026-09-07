@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Param,
   Post,
@@ -105,6 +106,17 @@ export class AttendanceController {
     @Param('date') date: string,
   ) {
     return this.attendanceService.sessionDetail(user.schoolId, courseId, date);
+  }
+
+  /** Delete an entire attendance session (all records for a course on a date). */
+  @Delete('session/:courseId/:date')
+  @Roles('SUPER_ADMIN', 'SCHOOL_ADMIN')
+  deleteSession(
+    @CurrentUser() user: SessionUser,
+    @Param('courseId') courseId: string,
+    @Param('date') date: string,
+  ) {
+    return this.attendanceService.deleteSession(user.schoolId, courseId, date, user.id);
   }
 
   @Get('report/:studentId')

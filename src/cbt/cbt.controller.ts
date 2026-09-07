@@ -49,6 +49,15 @@ export class CbtController {
     return this.cbtService.createBank(user.schoolId, dto);
   }
 
+  @Delete('question-banks/:bankId')
+  @Roles('SUPER_ADMIN', 'SCHOOL_ADMIN')
+  deleteBank(
+    @CurrentUser() user: SessionUser,
+    @Param('bankId') bankId: string,
+  ) {
+    return this.cbtService.deleteBank(bankId, user.schoolId, user.id);
+  }
+
   // ---- Questions ----
   @Get('question-banks/:bankId/questions')
   @Roles('SCHOOL_ADMIN', 'LECTURER')
@@ -66,6 +75,15 @@ export class CbtController {
   @Roles('SCHOOL_ADMIN', 'LECTURER')
   bulkCreateQuestions(@Body() dto: BulkCreateQuestionsDto) {
     return this.cbtService.bulkCreateQuestions(dto);
+  }
+
+  @Delete('questions/:id')
+  @Roles('SUPER_ADMIN', 'SCHOOL_ADMIN')
+  deleteQuestion(
+    @CurrentUser() user: SessionUser,
+    @Param('id') id: string,
+  ) {
+    return this.cbtService.deleteQuestion(id, user.schoolId, user.id);
   }
 
   // ---- Exams ----
@@ -103,6 +121,15 @@ export class CbtController {
     @Body() dto: AddExamQuestionsDto,
   ) {
     return this.cbtService.removeExamQuestions(id, dto.questionIds);
+  }
+
+  @Delete('exams/:id')
+  @Roles('SUPER_ADMIN', 'SCHOOL_ADMIN')
+  deleteExam(
+    @CurrentUser() user: SessionUser,
+    @Param('id') id: string,
+  ) {
+    return this.cbtService.deleteExam(id, user.schoolId, user.id);
   }
 
   @Patch('exams/:id/status')
