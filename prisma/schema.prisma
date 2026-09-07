@@ -303,6 +303,7 @@ model User {
   twoFactorEnabled Boolean  @default(false)
   twoFactorSecret  String?
   lastLoginAt    DateTime?
+  metadata       Json?
   createdAt      DateTime   @default(now())
   updatedAt      DateTime   @updatedAt
 

@@ -24,6 +24,7 @@ import {
   RefundDto,
   CreateScholarshipDto,
   CreateManualPaymentDto,
+  BulkDeletePaymentsDto,
 } from './dto/finance.dto';
 import { PaginationDto } from '../common/dto/pagination.dto';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
@@ -208,6 +209,26 @@ export class FinanceController {
     @Body() dto: CreateManualPaymentDto,
   ) {
     return this.financeService.createManualPayment(user.schoolId, dto, user.id);
+  }
+
+  // ---- Delete payment (super admin only) ----
+  @Delete('payments/:id')
+  @Roles('SUPER_ADMIN')
+  deletePayment(
+    @Param('id') id: string,
+    @CurrentUser() user: SessionUser,
+  ) {
+    return this.financeService.deletePayment(id, user.schoolId, user.id);
+  }
+
+  // ---- Bulk delete payments (super admin only) ----
+  @Post('payments/bulk-delete')
+  @Roles('SUPER_ADMIN')
+  bulkDeletePayments(
+    @CurrentUser() user: SessionUser,
+    @Body() dto: BulkDeletePaymentsDto,
+  ) {
+    return this.financeService.deletePayments(dto.ids, user.schoolId, user.id);
   }
 
   // ---- Refunds ----

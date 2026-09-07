@@ -1,4 +1,6 @@
 import {
+  ArrayNotEmpty,
+  IsArray,
   IsBoolean,
   IsEmail,
   IsEnum,
@@ -205,6 +207,13 @@ export class CreateScholarshipDto {
   @IsOptional()
   @IsString()
   reason?: string;
+}
+
+export class BulkDeletePaymentsDto {
+  @IsArray()
+  @ArrayNotEmpty()
+  @IsString({ each: true })
+  ids!: string[];
 }
 
 export class CreateManualPaymentDto {

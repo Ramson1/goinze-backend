@@ -134,6 +134,87 @@ export class FinanceService {
   }
 
   /**
+   * Permanently delete a payment record (SUPER_ADMIN only — enforced by the
+   * controller's @Roles guard). Receipt/Refund rows cascade; the ledger entry
+   * is set-null by the schema. Writes an audit-log entry for traceability.
+   */
+  async deletePayment(id: string, schoolId: string | null, actorUserId?: string) {
+    const existing = await this.prisma.db.payment.findUnique({ where: { id } });
+    if (!existing || (schoolId && existing.schoolId !== schoolId)) {
+      throw new NotFoundException('Payment not found');
+    }
+    const deleted = await this.prisma.db.payment.delete({ where: { id } });
+
+    // Audit trail (non-blocking — never fail the delete because logging failed)
+    this.prisma.db.auditLog
+      .create({
+        data: {
+          schoolId: existing.schoolId,
+          userId: actorUserId ?? null,
+          action: 'PAYMENT_DELETED',
+          entity: 'Payment',
+          entityId: id,
+          metadata: {
+            reference: existing.reference,
+            amount: existing.amount.toString(),
+            currency: existing.currency,
+            gateway: existing.gateway,
+            status: existing.status,
+            studentId: existing.studentId,
+            applicationId: existing.applicationId,
+            feeStructureId: existing.feeStructureId,
+          },
+        },
+      })
+      .catch((err) =>
+        this.logger.warn(
+          'Failed to write audit log for payment deletion',
+          err instanceof Error ? err.stack : '',
+        ),
+      );
+
+    this.logger.warn(
+      `Payment ${existing.reference} (${existing.amount.toString()} ${existing.currency}) deleted by user ${actorUserId ?? 'unknown'}`,
+    );
+    return deleted;
+  }
+
+  /**
+   * Delete several payment records at once (SUPER_ADMIN only). Reuses
+   * deletePayment per id so each deletion keeps its own school-scope check and
+   * audit-log entry. Individual failures never abort the batch — they are
+   * collected and returned so the UI can report partial success.
+   */
+  async deletePayments(
+    ids: string[],
+    schoolId: string | null,
+    actorUserId?: string,
+  ): Promise<{
+    requested: number;
+    deleted: number;
+    failed: { id: string; reason: string }[];
+  }> {
+    const uniqueIds = Array.from(new Set(ids));
+    const failed: { id: string; reason: string }[] = [];
+    let deleted = 0;
+    for (const id of uniqueIds) {
+      try {
+        await this.deletePayment(id, schoolId, actorUserId);
+        deleted += 1;
+      } catch (err) {
+        failed.push({
+          id,
+          reason: err instanceof Error ? err.message : 'Unknown error',
+        });
+      }
+    }
+    this.logger.warn(
+      `Bulk payment deletion by user ${actorUserId ?? 'unknown'}: ${deleted}/${uniqueIds.length} deleted`,
+    );
+    return { requested: uniqueIds.length, deleted, failed };
+  }
+
+  /**
    * Initialize a payment record in the DB and return the reference.
    * The frontend uses this reference with Flutterwave inline checkout,
    * which creates its own transaction on Flutterwave with the correct
