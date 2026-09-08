@@ -9,6 +9,13 @@ import { MailService } from '../mail/mail.service';
 export class CommunicationService {
   private readonly logger = new Logger(CommunicationService.name);
 
+  /**
+   * Static production URL of the admin dashboard, used as the CTA target in
+   * administrator notification emails. Hardcoded by design so no environment
+   * can reintroduce a localhost/dev URL.
+   */
+  private static readonly ADMIN_PORTAL_URL = 'https://admin.goinzeschool.edu.ng';
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly mail: MailService,
@@ -623,6 +630,127 @@ export class CommunicationService {
     if (userIds.length > 0) {
       return this.notifyUsers(userIds, title, body, metadata);
     }
+  }
+
+  // ---- Admin Email Notifications (automated triggers) ----
+
+  /**
+   * Email every SUPER_ADMIN and SCHOOL_ADMIN of a school about a platform event
+   * (new admission application, portal self-registration, etc.). Renders the
+   * teal-branded admin-notification template and sends to each admin individually.
+   * Non-blocking by contract — callers should fire-and-forget with .catch().
+   * Returns the number of admin recipients successfully emailed.
+   */
+  async emailAdmins(
+    schoolId: string | null,
+    data: {
+      subject: string;
+      heading: string;
+      message: string;
+      details?: { label: string; value: string }[];
+      ctaLabel?: string;
+      ctaUrl?: string;
+    },
+  ): Promise<number> {
+    const where: any = { role: { in: ['SUPER_ADMIN', 'SCHOOL_ADMIN'] } };
+    if (schoolId) where.schoolId = schoolId;
+
+    const admins = await this.prisma.db.user.findMany({
+      where,
+      select: { email: true },
+    });
+
+    // De-dupe case-insensitively and drop empty addresses.
+    const recipients = Array.from(
+      new Set(admins.map((a) => (a.email || '').trim().toLowerCase()).filter(Boolean)),
+    );
+    if (recipients.length === 0) {
+      this.logger.warn(
+        `emailAdmins: no SUPER_ADMIN/SCHOOL_ADMIN recipients for school ${schoolId ?? '(any)'}`,
+      );
+      return 0;
+    }
+
+    // Resolve school branding for the template header.
+    let schoolName = 'Goinze International School';
+    let schoolLogoUrl = '';
+    if (schoolId) {
+      const school = await this.prisma.db.school.findUnique({ where: { id: schoolId } });
+      if (school) {
+        schoolName = school.name;
+        schoolLogoUrl = school.logoUrl ?? '';
+      }
+    }
+    // Build an absolute logo URL — relative paths break in email clients.
+    if (
+      !schoolLogoUrl ||
+      (!schoolLogoUrl.startsWith('http://') &&
+        !schoolLogoUrl.startsWith('https://') &&
+        !schoolLogoUrl.startsWith('data:'))
+    ) {
+      schoolLogoUrl = 'https://res.cloudinary.com/dq7vegvkk/image/upload/v1786631436/logo_phczed.png';
+    }
+
+    const html = this.renderAdminNotificationEmailHtml({
+      schoolName,
+      schoolLogoUrl,
+      heading: data.heading,
+      message: data.message,
+      details: data.details ?? [],
+      ctaLabel: data.ctaLabel ?? 'Open Admin Dashboard',
+      ctaUrl: data.ctaUrl ?? CommunicationService.ADMIN_PORTAL_URL,
+    });
+
+    let sent = 0;
+    for (const email of recipients) {
+      // Addressed straight to the admin users, so skip the global monitoring BCC
+      // to avoid delivering duplicate blind copies.
+      const ok = await this.mail.sendEmail(email, data.subject, html, { skipMonitorBcc: true });
+      if (ok) sent++;
+    }
+    this.logger.log(
+      `Admin notification "${data.subject}" emailed to ${sent}/${recipients.length} admin(s).`,
+    );
+    return sent;
+  }
+
+  /** Render the teal-branded HTML email used to alert administrators to a platform event. */
+  private renderAdminNotificationEmailHtml(d: {
+    schoolName: string;
+    schoolLogoUrl: string;
+    heading: string;
+    message: string;
+    details: { label: string; value: string }[];
+    ctaLabel: string;
+    ctaUrl: string;
+  }): string {
+    const logoFallback = 'https://goinzeschool.vercel.app/logo.png';
+    const row = (label: string, value: string) =>
+      `<tr><td style="padding:9px 12px;border:1px solid #e2e8f0;background:#f0fdfa;font-weight:bold;color:#0f766e;width:38%;">${label}</td><td style="padding:9px 12px;border:1px solid #e2e8f0;color:#1e293b;">${value}</td></tr>`;
+    const detailsTable = d.details.length
+      ? `<table style="width:100%;border-collapse:collapse;margin:0 0 24px;font-size:14px;">${d.details
+          .map((r) => row(r.label, r.value))
+          .join('')}</table>`
+      : '';
+    return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="font-family:Arial,Helvetica,sans-serif;background:#f8fafc;margin:0;padding:32px;">
+  <div style="max-width:640px;margin:0 auto;background:#fff;border-radius:12px;overflow:hidden;border:1px solid #e2e8f0;">
+    <div style="background:linear-gradient(135deg,#1e3a5f,#0f766e);padding:26px 32px;text-align:center;">
+      <img src="${d.schoolLogoUrl || logoFallback}" alt="${d.schoolName}" style="max-height:56px;margin:0 auto 10px;display:block;border-radius:8px;" />
+      <h1 style="color:#fff;margin:0;font-size:20px;">${d.heading}</h1>
+    </div>
+    <div style="padding:28px 32px;">
+      <p style="margin:0 0 20px;color:#334155;font-size:15px;line-height:1.6;">${d.message}</p>
+      ${detailsTable}
+      <div style="text-align:center;margin-top:8px;">
+        <a href="${d.ctaUrl}" style="display:inline-block;background:#0f766e;color:#fff;text-decoration:none;font-weight:bold;padding:12px 26px;border-radius:8px;font-size:14px;">${d.ctaLabel}</a>
+      </div>
+    </div>
+    <div style="background:#f8fafc;padding:18px 32px;text-align:center;border-top:1px solid #e2e8f0;">
+      <p style="margin:0;font-size:12px;color:#94a3b8;">This is an automated alert from ${d.schoolName} for administrators. Please do not reply to this email.</p>
+    </div>
+  </div>
+</body></html>`;
   }
 
   // ---- Bulk Email (Email Blast) ----

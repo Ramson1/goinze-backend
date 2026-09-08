@@ -164,6 +164,35 @@ export class AdmissionsService {
         .catch((err) => this.logger.error('Failed to send application notification', err instanceof Error ? err.stack : ''));
     }
 
+    // Email ALL school administrators (SUPER_ADMIN + SCHOOL_ADMIN) about the new
+    // application, regardless of whether an application fee was configured/paid.
+    // Fire-and-forget so submission never blocks on email delivery.
+    const applicantName = [application.firstName, application.middleName, application.lastName]
+      .filter(Boolean)
+      .join(' ');
+    this.comms
+      .emailAdmins(school.id, {
+        subject: `New Admission Application — ${applicantName} (${application.applicationNo})`,
+        heading: 'New Admission Application',
+        message: `A prospective student has submitted an admission application to <strong>${school.name}</strong>. Please review it on the admin dashboard.`,
+        details: [
+          { label: 'Applicant Name', value: applicantName },
+          { label: 'Application No', value: application.applicationNo },
+          { label: 'Email', value: application.email },
+          { label: 'Phone', value: application.phone ?? '—' },
+          { label: 'Gender', value: application.gender ?? '—' },
+          { label: 'First Choice', value: application.firstChoice ?? '—' },
+          { label: 'Application Fee', value: admissionFeePaid ? 'Paid' : 'Not paid / not required' },
+        ],
+        ctaLabel: 'Review Application',
+      })
+      .catch((err) =>
+        this.logger.error(
+          'Failed to email admins about new application',
+          err instanceof Error ? err.stack : '',
+        ),
+      );
+
     return {
       id: application.id,
       applicationNo: application.applicationNo,

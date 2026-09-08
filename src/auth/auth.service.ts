@@ -387,7 +387,24 @@ export class AuthService {
         `${dto.firstName} ${dto.lastName} (Matric: ${dto.matricNumber}) has registered for a portal account and is awaiting approval.`,
       )
       .catch((err) => this.logger.error('Failed to notify SUPER_ADMIN of self-registration', err instanceof Error ? err.stack : ''));
-    Promise.allSettled([notifyStudentReg, notifySuperReg]);
+    // Email ALL admins (SUPER_ADMIN + SCHOOL_ADMIN) about the new student registration.
+    const emailAdminsReg = this.comms
+      .emailAdmins(dto.schoolId, {
+        subject: `New Student Portal Registration — ${dto.firstName} ${dto.lastName}`,
+        heading: 'New Student Portal Registration',
+        message: `An existing student has created a portal account and is <strong>awaiting admin approval</strong>. Please review and approve it on the admin dashboard.`,
+        details: [
+          { label: 'Full Name', value: `${dto.firstName} ${dto.lastName}` },
+          { label: 'Matric Number', value: dto.matricNumber },
+          { label: 'Email', value: dto.email },
+          { label: 'Phone', value: dto.phone ?? '—' },
+          { label: 'Account Type', value: 'Student Portal' },
+          { label: 'Status', value: 'Pending Approval' },
+        ],
+        ctaLabel: 'Review Registration',
+      })
+      .catch((err) => this.logger.error('Failed to email admins about student self-registration', err instanceof Error ? err.stack : ''));
+    Promise.allSettled([notifyStudentReg, notifySuperReg, emailAdminsReg]);
 
     return {
       success: true,
@@ -492,7 +509,24 @@ export class AuthService {
         `${dto.firstName} ${dto.lastName} (Staff: ${dto.staffNumber}) has registered for a lecturer portal account and is awaiting approval.`,
       )
       .catch((err) => this.logger.error('Failed to notify SUPER_ADMIN of lecturer self-registration', err instanceof Error ? err.stack : ''));
-    Promise.allSettled([notifyLectReg, notifySuperLect]);
+    // Email ALL admins (SUPER_ADMIN + SCHOOL_ADMIN) about the new lecturer registration.
+    const emailAdminsLect = this.comms
+      .emailAdmins(dto.schoolId, {
+        subject: `New Lecturer Portal Registration — ${dto.firstName} ${dto.lastName}`,
+        heading: 'New Lecturer Portal Registration',
+        message: `An existing lecturer has created a portal account and is <strong>awaiting admin approval</strong>. Please review and approve it on the admin dashboard.`,
+        details: [
+          { label: 'Full Name', value: `${dto.firstName} ${dto.lastName}` },
+          { label: 'Staff Number', value: dto.staffNumber },
+          { label: 'Email', value: dto.email },
+          { label: 'Phone', value: dto.phone ?? '—' },
+          { label: 'Account Type', value: 'Lecturer Portal' },
+          { label: 'Status', value: 'Pending Approval' },
+        ],
+        ctaLabel: 'Review Registration',
+      })
+      .catch((err) => this.logger.error('Failed to email admins about lecturer self-registration', err instanceof Error ? err.stack : ''));
+    Promise.allSettled([notifyLectReg, notifySuperLect, emailAdminsLect]);
 
     return {
       success: true,
