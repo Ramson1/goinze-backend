@@ -77,6 +77,13 @@ export class FinanceController {
     return this.financeService.deleteFeeStructure(id, user.schoolId);
   }
 
+  /** Admin overview of new vs returning vs scholarship fees under the policy. */
+  @Get('fee-policy')
+  @Roles('SCHOOL_ADMIN', 'ACCOUNTANT')
+  feePolicy(@CurrentUser() user: SessionUser) {
+    return this.financeService.feePolicySummary(user.schoolId);
+  }
+
   // ---- Application fees (pre-submission, public) ----
   @Public()
   @Get('application-fees')

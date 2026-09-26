@@ -22,6 +22,9 @@ import {
   POLICY_TUITION_FEE_ID,
   POLICY_TUITION_PURPOSE,
   RETURNING_ALLOWED_TYPES,
+  RETURNING_MIN_LEVEL,
+  RETURNING_TUITION_BY_DEPARTMENT_CODE,
+  SCHOLARSHIP_TUITION_AMOUNT,
 } from './fee-policy';
 import {
   CreateFeeStructureDto,
@@ -100,6 +103,93 @@ export class FinanceService {
       throw new NotFoundException('Fee structure not found');
     }
     return this.prisma.db.feeStructure.delete({ where: { id } });
+  }
+
+  /**
+   * Admin-facing overview of what NEW (entering 100L) and RETURNING (200L+)
+   * students are expected to pay under the 2026/2027 fee policy, including the
+   * flat scholarship tuition. Combines the policy constants (single source of
+   * truth) with the school's configured FeeStructure rows so the dashboard
+   * always reflects both the fixed policy amounts and any configured extras.
+   */
+  async feePolicySummary(schoolId: string | null) {
+    const [currentSession, departments, structures] = await Promise.all([
+      schoolId
+        ? this.prisma.db.academicSession.findFirst({
+            where: { schoolId, isCurrent: true },
+          })
+        : Promise.resolve(null),
+      this.prisma.db.department.findMany({
+        where: schoolId ? { schoolId } : {},
+        select: { code: true, name: true },
+      }),
+      this.prisma.db.feeStructure.findMany({
+        where: schoolId ? { schoolId } : {},
+        include: { department: true },
+        orderBy: { createdAt: 'asc' },
+      }),
+    ]);
+
+    // Department display names keyed by upper-case code (policy map uses codes).
+    const deptNameByCode = new Map(
+      departments.map((d) => [(d.code ?? '').trim().toUpperCase(), d.name]),
+    );
+
+    // Portal access fee — prefer one scoped to the current session, else any.
+    const portalStructures = structures.filter((s) => s.type === 'PORTAL_ACCESS');
+    const portal =
+      portalStructures.find((s) => currentSession && s.sessionId === currentSession.id) ??
+      portalStructures[0] ??
+      null;
+    const portalAccess = portal
+      ? { name: portal.name, amount: Number(portal.amount) }
+      : null;
+    const portalAmount = portalAccess?.amount ?? 0;
+
+    // Returning tuition per department (fixed by policy) + portal access on top.
+    const returningDepartments = Object.entries(
+      RETURNING_TUITION_BY_DEPARTMENT_CODE,
+    ).map(([code, tuition]) => ({
+      code,
+      name: deptNameByCode.get(code) ?? code,
+      tuition,
+      portalAccess: portalAmount,
+      total: tuition + portalAmount,
+    }));
+
+    // Entering (100L regular) students: every configured fee with level null|100.
+    const enteringItems = structures
+      .filter((s) => s.level == null || s.level === 100)
+      .map((s) => ({
+        name: s.name,
+        type: s.type as string,
+        amount: Number(s.amount),
+        isMandatory: s.isMandatory,
+        departmentName: s.department?.name ?? null,
+      }));
+    const enteringTotal = enteringItems.reduce((sum, i) => sum + i.amount, 0);
+
+    return {
+      sessionName: currentSession?.name ?? null,
+      portalConfigured: !!portalAccess,
+      scholarship: {
+        tuitionAmount: SCHOLARSHIP_TUITION_AMOUNT,
+        portalAccess,
+        total: SCHOLARSHIP_TUITION_AMOUNT + portalAmount,
+      },
+      returning: {
+        minLevel: RETURNING_MIN_LEVEL,
+        allowedTypes: RETURNING_ALLOWED_TYPES,
+        portalAccess,
+        departments: returningDepartments,
+      },
+      entering: {
+        level: 100,
+        items: enteringItems,
+        total: enteringTotal,
+        configured: enteringItems.length > 0,
+      },
+    };
   }
 
   // ---- Payments ----
