@@ -114,6 +114,7 @@ export class AdmissionsService {
         declarationName: dto.declarationName || undefined,
         declarationDate: dto.declarationDate ? new Date(dto.declarationDate) : undefined,
         declarationAgreed: dto.declarationAgreed ?? false,
+        isScholarship: dto.isScholarship ?? false,
         status: 'SUBMITTED',
       },
       include: { documents: false },
@@ -183,6 +184,7 @@ export class AdmissionsService {
           { label: 'Gender', value: application.gender ?? '—' },
           { label: 'First Choice', value: application.firstChoice ?? '—' },
           { label: 'Application Fee', value: admissionFeePaid ? 'Paid' : 'Not paid / not required' },
+          { label: 'Scholarship Student', value: dto.isScholarship ? 'Yes' : 'No' },
         ],
         ctaLabel: 'Review Application',
       })
@@ -526,6 +528,7 @@ export class AdmissionsService {
           departmentId,
           matricNumber,
           currentLevel: 100,
+          isScholarship: application.isScholarship,
           entrySessionId: currentSession?.id,
           status: 'APPLICANT',
         },

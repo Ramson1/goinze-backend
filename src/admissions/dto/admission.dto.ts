@@ -129,6 +129,11 @@ export class ApplyDto {
   @IsBoolean()
   declarationAgreed?: boolean;
 
+  /** Applicant declares they are a scholarship student (flat tuition applies). */
+  @IsOptional()
+  @IsBoolean()
+  isScholarship?: boolean;
+
   /** Payment reference from a successful pre-admission fee payment. */
   @IsOptional()
   @IsString()

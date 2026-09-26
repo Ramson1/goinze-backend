@@ -413,6 +413,7 @@ model Student {
   departmentId  String?
   department    Department?   @relation(fields: [departmentId], references: [id], onDelete: SetNull)
   currentLevel  Int?          @default(100)
+  isScholarship Boolean       @default(false)
   matricActivatedAt DateTime?
   tempPassword  String?       // Temporary password for portal login (cleared after first login)
   entrySessionId String?
@@ -1110,6 +1111,7 @@ model Application {
   admissionLetterUrl String?
   acceptanceFeePaid Boolean       @default(false)
   applicationFormFeePaid Boolean @default(false)
+  isScholarship     Boolean         @default(false)
   // Verification checklist (Office Use Only)
   verificationDocumentsReviewed Boolean @default(false)
   verificationDocumentsMatch Boolean @default(false)

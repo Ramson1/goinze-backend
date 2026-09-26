@@ -1,4 +1,5 @@
 import {
+  IsBoolean,
   IsEnum,
   IsInt,
   IsOptional,
@@ -148,6 +149,11 @@ export class UpdateStudentDto {
   @IsOptional()
   @IsString()
   passportUrl?: string;
+
+  /** Scholarship students pay the flat scholarship tuition under the fee policy. */
+  @IsOptional()
+  @IsBoolean()
+  isScholarship?: boolean;
 }
 
 export class ImportStudentsDto {

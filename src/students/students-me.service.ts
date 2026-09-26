@@ -2,6 +2,7 @@ import { BadRequestException, ForbiddenException, Injectable, Logger, NotFoundEx
 import { computeGpa, generateCardNumber, generateVerificationCode } from '../lib/utils';
 import { PrismaService } from '../prisma/prisma.service';
 import { CommunicationService } from '../communication/communication.service';
+import { applyFeePolicy, POLICY_TUITION_FEE_ID, POLICY_TUITION_PURPOSE } from '../finance/fee-policy';
 import type { RegisterCoursesDto } from './dto/students-me.dto';
 
 /**
@@ -176,8 +177,16 @@ export class StudentsMeService {
       }),
     ]);
 
-    // Include all fee structures — mandatory and optional (optional fees shown for student opt-in)
-    const applicableFees = structures;
+    // Apply the 2026/2027 fee policy: returning students (200L+) are limited to
+    // portal access + department tuition; scholarship students pay a flat
+    // tuition. Mandatory and optional fees both remain for entering students.
+    const applicableFees = applyFeePolicy(structures, {
+      currentLevel: s.currentLevel,
+      departmentCode: s.department?.code ?? null,
+      isScholarship: s.isScholarship,
+      sessionId: currentSession?.id ?? null,
+      semester: currentSemester,
+    });
 
     // Define display order within a semester: Portal Access first, Tuition (SCHOOL) last
     const typeOrder: Record<string, number> = {
@@ -218,6 +227,13 @@ export class StudentsMeService {
       const candidates = paymentsByFeeId.get(f.id);
       if (candidates) {
         paid = candidates.find((p) => !matchedPaymentIds.has(p.id));
+      }
+      // Virtual policy tuition (no FeeStructure row): reconciled via the
+      // POLICY_TUITION purpose tag stored on the payment metadata.
+      if (!paid && f.id === POLICY_TUITION_FEE_ID) {
+        paid = paymentsWithoutFeeId.find(
+          (p) => !matchedPaymentIds.has(p.id) && (p.metadata as any)?.purpose === POLICY_TUITION_PURPOSE,
+        );
       }
       // Fallback: match by type + amount for payments not linked to a specific fee structure
       if (!paid) {

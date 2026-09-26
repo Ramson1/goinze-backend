@@ -16,6 +16,14 @@ import { FlutterwaveGateway } from './flutterwave.gateway';
 import { PaystackGateway } from './paystack.gateway';
 import { CommunicationService } from '../communication/communication.service';
 import {
+  applyFeePolicy,
+  isReturningLevel,
+  policyTuitionAmount,
+  POLICY_TUITION_FEE_ID,
+  POLICY_TUITION_PURPOSE,
+  RETURNING_ALLOWED_TYPES,
+} from './fee-policy';
+import {
   CreateFeeStructureDto,
   UpdateFeeStructureDto,
   InitPaymentDto,
@@ -265,18 +273,69 @@ export class FinanceService {
       }
     }
 
+    // ── 2026/2027 fee policy enforcement (server-authoritative amounts) ──
+    // Returning students may only pay portal access + tuition; tuition amounts
+    // are overridden with the policy value; the virtual policy tuition item has
+    // no FeeStructure row, so its payment is stored with a purpose tag instead.
+    let policyFeeStructureId: string | null = dto.feeStructureId ?? null;
+    let policyAmount = dto.amount;
+    let policyMetadata: Record<string, any> | undefined = dto.purpose
+      ? { purpose: dto.purpose }
+      : undefined;
+
+    if (dto.studentId) {
+      const policyStudent = await this.prisma.db.student.findUnique({
+        where: { id: dto.studentId },
+        select: {
+          id: true,
+          currentLevel: true,
+          isScholarship: true,
+          department: { select: { code: true } },
+        },
+      });
+      if (policyStudent) {
+        const tuition = policyTuitionAmount({
+          currentLevel: policyStudent.currentLevel,
+          departmentCode: policyStudent.department?.code ?? null,
+          isScholarship: policyStudent.isScholarship,
+        });
+        const structure = dto.feeStructureId
+          ? await this.prisma.db.feeStructure.findUnique({ where: { id: dto.feeStructureId } })
+          : null;
+
+        if (dto.feeStructureId && (dto.feeStructureId === POLICY_TUITION_FEE_ID || !structure)) {
+          // Virtual policy tuition — no FeeStructure FK row exists; tag the payment.
+          policyFeeStructureId = null;
+          policyAmount = tuition ?? dto.amount;
+          policyMetadata = { purpose: POLICY_TUITION_PURPOSE };
+        } else if (!dto.feeStructureId && dto.purpose === POLICY_TUITION_PURPOSE) {
+          policyAmount = tuition ?? dto.amount;
+          policyMetadata = { purpose: POLICY_TUITION_PURPOSE };
+        } else if (structure) {
+          if (structure.type === 'SCHOOL' && tuition != null) {
+            policyAmount = tuition;
+          } else if (
+            isReturningLevel(policyStudent.currentLevel) &&
+            !RETURNING_ALLOWED_TYPES.includes(structure.type)
+          ) {
+            throw new BadRequestException('This fee is not payable for returning students.');
+          }
+        }
+      }
+    }
+
     const payment = await this.prisma.db.payment.create({
       data: {
         schoolId: resolvedSchoolId,
         studentId: dto.studentId,
         applicationId: dto.applicationId,
-        feeStructureId: dto.feeStructureId,
+        feeStructureId: policyFeeStructureId,
         reference,
-        amount: dto.amount,
+        amount: policyAmount,
         currency: dto.currency ?? 'NGN',
         gateway: (dto.gateway as any) ?? 'FLUTTERWAVE',
         status: 'PENDING',
-        metadata: dto.purpose ? { purpose: dto.purpose } : undefined,
+        metadata: policyMetadata,
       },
     });
 
@@ -812,6 +871,7 @@ export class FinanceService {
   async studentFeeBreakdown(studentId: string) {
     const student = await this.prisma.db.student.findUnique({
       where: { id: studentId },
+      include: { department: true },
     });
     if (!student) throw new NotFoundException('Student not found');
 
@@ -853,8 +913,16 @@ export class FinanceService {
       }),
     ]);
 
-    // Include all fee structures — mandatory and optional (optional fees shown for student opt-in)
-    const applicableFees = structures;
+    // Apply the 2026/2027 fee policy so the admin view matches the student portal:
+    // returning students (200L+) limited to portal access + department tuition,
+    // scholarship students pay a flat tuition.
+    const applicableFees = applyFeePolicy(structures, {
+      currentLevel: student.currentLevel,
+      departmentCode: student.department?.code ?? null,
+      isScholarship: student.isScholarship,
+      sessionId: currentSession?.id ?? null,
+      semester: currentSemester,
+    });
 
     // Define display order within a semester: Portal Access first, Tuition (SCHOOL) last
     const typeOrder: Record<string, number> = {
@@ -895,6 +963,13 @@ export class FinanceService {
       const candidates = paymentsByFeeId.get(f.id);
       if (candidates) {
         paid = candidates.find((p) => !matchedPaymentIds.has(p.id));
+      }
+      // Virtual policy tuition (no FeeStructure row): reconciled via the
+      // POLICY_TUITION purpose tag stored on the payment metadata.
+      if (!paid && f.id === POLICY_TUITION_FEE_ID) {
+        paid = paymentsWithoutFeeId.find(
+          (p) => !matchedPaymentIds.has(p.id) && (p.metadata as any)?.purpose === POLICY_TUITION_PURPOSE,
+        );
       }
       // Fallback: match by type + amount for payments not linked to a specific fee structure
       if (!paid) {

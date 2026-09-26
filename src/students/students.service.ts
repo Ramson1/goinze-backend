@@ -127,6 +127,7 @@ export class StudentsService {
         currentLevel: dto.currentLevel,
         status: dto.status as any,
         passportUrl: dto.passportUrl,
+        isScholarship: dto.isScholarship,
       },
     });
   }
